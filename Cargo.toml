@@ -1,0 +1,13 @@
+[package]
+name = "secure_voting_machine"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Concepts of a secure voting machine"
+
+[dependencies]
+ratatui = "0.30.2"
+crossterm = "0.29"
+arboard = { version = "3.6", default-features = false }
+sha2 = "0.10"
+uuid = { version = "1", features = ["v4"] }
