@@ -121,32 +121,30 @@ pub(crate) fn verify_user_login(
     }
 }
 
-// fn main() -> Result<()> {
-//     // Load local .env file variables
-//     dotenvy::dotenv().ok();
+#[cfg(test)] 
+mod tests {
+    use super::*;
+    use std::sync::{LazyLock, Mutex};
+    static CONN: LazyLock<Mutex<Connection>> = LazyLock::new(|| {
+        let conn = initialize_database().expect("Failed to initialize database");
+        Mutex::new(conn)
+    });
 
-//     let conn = Connection::open("my_database.db")?;
-//     conn.execute(
-//         "CREATE TABLE IF NOT EXISTS users (
-//             id INTEGER PRIMARY KEY AUTOINCREMENT,
-//             email TEXT NOT NULL UNIQUE,
-//             password_hash TEXT NOT NULL
-//         )",
-//         [],
-//     )?;
+    #[test]
+    fn test_registration() {
+        match register_user(&CONN.lock().unwrap(), "rustacean@example.com", "56565556656", "voter", "Rustacean", "MySecret123") {
+            Ok(_) => println!("Account created successfully!"),
+            Err(e) => println!("Skipped registration: {}", e),
+        }
+    }
 
-//     // Test Registration
-//     match register_user(&conn, "rustacean@example.com", "MySecret123") {
-//         Ok(_) => println!("Account created successfully!"),
-//         Err(e) => println!("Skipped registration: {}", e),
-//     }
-
-//     // Test Login
-//     match verify_user_login(&conn, "rustacean@example.com", "MySecret123") {
-//         Ok(true) => println!("Access Granted! 🎉"),
-//         Ok(false) => println!("Access Denied! ❌"),
-//         Err(e) => println!("Database error during login: {}", e),
-//     }
-
-//     Ok(())
-// }
+    // Test Login
+    #[test]
+    fn test_login() {
+        match verify_user_login(&CONN.lock().unwrap(), "rustacean@example.com", "MySecret123") {
+            Ok(true) => println!("Access Granted! 🎉"),
+            Ok(false) => println!("Access Denied! ❌"),
+            Err(e) => println!("Database error during login: {}", e),
+        }
+    }
+}
