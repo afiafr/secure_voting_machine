@@ -44,6 +44,10 @@ enum LoginFocus {
     Password,
 }
 
+enum PinFocus {
+    Pin,
+}
+
 impl Position {
     fn placeholder(n: usize) -> Self {
         Self {
@@ -67,7 +71,9 @@ impl Position {
 
 #[derive(Clone, Debug)]
 struct Voter {
-    contact: String,
+    email: String,
+    full_name: String,
+    phone_number: String,
     registered: bool,
     key: Option<String>,
 }
@@ -234,6 +240,9 @@ struct App {
     login_phone_number: String,
     login_full_name: String,
     login_role: String,
+    voter_pin: String,
+    login_pin: String,
+    pin_focus: PinFocus,
     }
 
 impl Default for App {
@@ -275,6 +284,9 @@ impl Default for App {
             login_full_name: String::new(),
             conn: None,
             login_role: "Administrator".into(),
+            voter_pin: String::new(),
+            login_pin: String::new(),
+            pin_focus: PinFocus::Pin,
         }
     }
 }
@@ -380,6 +392,55 @@ fn submit_ballot(e: &mut Election, key: &str, choices: &[Option<usize>]) -> Resu
     e.submitted.insert(key.to_owned());
     Ok(())
 }
+
+
+fn draw_pin(frame: &mut Frame, area: Rect, app: &App) {
+    let sections = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Length(3),
+        Constraint::Min(2),
+    ])
+    .margin(1)
+    .split(area);
+
+    frame.render_widget(
+        Paragraph::new(format!("Enter your {} PIN number", app.login_role))
+            .alignment(Alignment::Center),
+        sections[0],
+    );
+
+    let pin_focused = matches!(app.pin_focus, PinFocus::Pin);
+
+    // Never display the actual PIN.
+    let masked_pin = "*".repeat(app.login_pin.chars().count());
+
+    let pin_block = Block::bordered()
+        .title_top(if pin_focused {
+            "PIN • typing"
+        } else {
+            "PIN"
+        })
+        .border_style(
+            Style::new().fg(if pin_focused { ACTIVE } else { MUTED }),
+        );
+
+    frame.render_widget(
+        Paragraph::new(masked_pin).block(pin_block),
+        sections[1],
+    );
+
+    frame.render_widget(
+        Paragraph::new(
+            "Tab: switch field | Enter: sign in | Esc: return\n\
+             Voter access requires successful PIN verification.",
+        )
+        .alignment(Alignment::Center)
+        .wrap(Wrap { trim: true })
+        .style(Style::new().fg(Color::Gray)),
+        sections[2],
+    );
+}
+
 
 fn draw_login(frame: &mut Frame, area: Rect, app: &App) {
     let sections = Layout::vertical([
@@ -643,26 +704,30 @@ impl App {
         }
     }
 
-    fn add_voters(&mut self, contacts: impl IntoIterator<Item = String>) -> usize {
+    fn add_voters(&mut self, contacts: Vec<Voter>) -> usize {
         let mut seen: HashSet<_> = self
             .voters
             .iter()
-            .map(|v| v.contact.to_ascii_lowercase())
+            .map(|v| v.email.to_ascii_lowercase())
             .collect();
         let mut n = 0;
-        for contact in contacts {
-            let contact = contact.trim().trim_matches('"').trim().to_string();
-            if contact.is_empty() || contact.eq_ignore_ascii_case("contact") {
+        for voter in contacts {
+            let email = voter.email.trim().trim_matches('"').trim().to_string();
+            if email.is_empty() || email.eq_ignore_ascii_case("contact") {
                 continue;
             }
-            if seen.insert(contact.to_ascii_lowercase()) {
+            if seen.insert(email.to_ascii_lowercase()) {
                 self.voters.push(Voter {
-                    contact,
+                    email: email.clone(),
+                    full_name: voter.full_name.clone(),
+                    phone_number: voter.phone_number.clone(),
                     registered: false,
                     key: None,
                 });
                 n += 1;
             }
+
+            let _ = auth::login::register_voter_pin(self.conn.as_ref().unwrap(), &email, &voter.full_name, &voter.phone_number);
         }
         if !self.voters.is_empty() && self.voter_state.selected().is_none() {
             self.voter_state.select(Some(0));
@@ -825,9 +890,12 @@ impl App {
                 // 3. Only after both succeed:
                 //    self.authenticated = true;
 
-                self.notice =
-                    "Account created successfully"
-                        .into();
+                self.confirm(
+                    "Account successfully created",
+                    "Return to the main menu?",
+                    ConfirmAction::ExitAdmin,
+                );
+
             }
 
             Ok(false) => {
@@ -843,7 +911,7 @@ impl App {
         }
     }
 
-    fn submit_admin_login(&mut self) {
+    fn submit_login(&mut self) {
         let Some(conn) = self.conn.as_ref() else {
             self.info("Login Error", "Database connection is unavailable.");
             return;
@@ -883,7 +951,7 @@ impl App {
         }
     }
 
-    fn handle_admin_login(&mut self, key: KeyEvent) {
+    fn handle_login(&mut self, key: KeyEvent) {
         // Ignore key-release events.
         if key.kind != KeyEventKind::Press {
             return;
@@ -919,12 +987,85 @@ impl App {
                 }
             }
 
-            KeyCode::Enter => self.submit_admin_login(),
+            KeyCode::Enter => self.submit_login(),
 
             KeyCode::Esc => {
                 self.login_password.clear();
                 self.confirm(
                     "Leave Admin Login?",
+                    "Return to the main menu?",
+                    ConfirmAction::ExitAdmin,
+                );
+            }
+
+            _ => {}
+        }
+    }
+
+    fn submit_pin(&mut self) {
+        let Some(conn) = self.conn.as_ref() else {
+            self.info("Login Error", "Database connection is unavailable.");
+            return;
+        };
+
+        let result = crate::auth::login::handle_pin(
+            conn,
+            &self.voter_pin,
+        );
+
+        self.voter_pin.clear();
+
+        match result {
+            Ok(true) => {
+                // Password verified, but admin access is NOT granted yet.
+                //
+                // Next:
+                // 1. Check this user's stored database role is Admin.
+                // 2. Complete OTP verification if required.
+                // 3. Only after both succeed:
+                //    self.authenticated = true;
+
+                self.authenticated = true;
+            }
+
+            Ok(false) => {
+                self.info("Wrong PIN", "Invalid PIN.");
+            }
+
+            Err(_) => {
+                self.info(
+                    "Pin Error",
+                    "Unable to verify your PIN. Please try again.",
+                );
+            }
+        }
+    }
+
+    fn handle_pin(&mut self, key: KeyEvent) {
+        // Ignore key-release events.
+        if key.kind != KeyEventKind::Press {
+            return;
+        }
+
+        match key.code {
+            KeyCode::Char(c)
+                if !key.modifiers.intersects(
+                    KeyModifiers::CONTROL | KeyModifiers::ALT,
+                ) =>
+            {
+                self.voter_pin.push(c);
+            }
+
+            KeyCode::Backspace => {
+                self.voter_pin.pop();
+            }
+
+            KeyCode::Enter => self.submit_pin(),
+
+            KeyCode::Esc => {
+                self.voter_pin.clear();
+                self.confirm(
+                    "Leave Voter Login?",
                     "Return to the main menu?",
                     ConfirmAction::ExitAdmin,
                 );
@@ -998,7 +1139,7 @@ impl App {
     fn handle_admin(&mut self, key: KeyEvent) {
         // While unauthenticated, send all input to the login form.
         if !self.authenticated {
-            self.handle_admin_login(key);
+            self.handle_login(key);
             return;
         }
 
@@ -1069,7 +1210,7 @@ impl App {
                         if let Some(i) = self.voter_state.selected() {
                             if let Some(v) = self.voters.get_mut(i) {
                                 v.registered = true;
-                                self.notice = format!("Registered {} (local demo)", v.contact);
+                                self.notice = format!("Registered {} (local demo)", v.full_name);
                             }
                         }
                     }
@@ -1091,6 +1232,10 @@ impl App {
     }
 
     fn handle_district(&mut self, key: KeyEvent) {
+        if !self.authenticated {
+            self.handle_login(key);
+            return;
+        }
         match key.code {
             KeyCode::Esc => self.screen = Screen::Main,
             KeyCode::Tab | KeyCode::BackTab | KeyCode::Left | KeyCode::Right => {
@@ -1175,6 +1320,10 @@ impl App {
     }
 
     fn handle_vote(&mut self, key: KeyEvent) {
+        if !self.authenticated {
+            self.handle_pin(key);
+            return;
+        }
         match key.code {
             KeyCode::Esc => {
                 self.screen = Screen::Main;
@@ -1342,6 +1491,23 @@ impl App {
     }
 
     fn finish_input(&mut self, purpose: InputPurpose, text: String) -> Result<(), String> {
+        fn parse_voter_input(text: &str) -> Result<Voter, String> {
+            let fields: Vec<&str> = text.split(',').map(str::trim).collect();
+
+            if fields.len() != 3 || fields.iter().any(|field| field.is_empty()) {
+                return Err(
+                    "Expected: email,full_name,phone_number".into(),
+                );
+            }
+
+            Ok(Voter {
+                email: fields[0].to_string(),
+                full_name: fields[1].to_string(),
+                phone_number: fields[2].to_string(),
+                registered: false,
+                key: None,
+            })
+        }
         match purpose {
             InputPurpose::Edit(target) => {
                 if text.is_empty() {
@@ -1369,21 +1535,29 @@ impl App {
                 self.notice = "Ballot field updated".into();
             }
             InputPurpose::ImportVoters => {
-                let contents =
-                    fs::read_to_string(&text).map_err(|e| format!("Cannot read {text}: {e}"))?;
-                // One email or phone per line, with optional comma-separated records.
-                let contacts = contents
+                let path = text.trim();
+
+                let contents = fs::read_to_string(path)
+                    .map_err(|e| format!("Cannot read {path}: {e}"))?;
+
+                let contacts: Vec<Voter> = contents
                     .lines()
-                    .flat_map(|line| line.split(','))
-                    .map(str::to_string);
+                    .enumerate()
+                    .filter(|(_, line)| !line.trim().is_empty())
+                    .map(|(index, line)| {
+                        parse_voter_input(line)
+                            .map_err(|e| format!("Line {}: {e}", index + 1))
+                    })
+                    .collect::<Result<Vec<_>, String>>()?;
+
                 let count = self.add_voters(contacts);
-                self.notice = format!("Imported {count} new voter(s) from {text}");
+                self.notice = format!("Imported {count} new voter(s) from {path}");
             }
+
             InputPurpose::NewVoter => {
-                if text.is_empty() {
-                    return Err("Enter an email address or phone number".into());
-                }
-                let added = self.add_voters([text]);
+                let voter = parse_voter_input(&text)?;
+                let added = self.add_voters(vec![voter]);
+
                 self.notice = if added == 0 {
                     "Voter already exists".into()
                 } else {
@@ -1567,7 +1741,7 @@ fn draw(frame: &mut Frame, app: &mut App) {
             if app.authenticated {
                 draw_vote(frame, page[1], app);
             } else {
-                draw_login(frame, page[1], app);
+                draw_pin(frame, page[1], app);
             }
         },
     }
@@ -1830,7 +2004,7 @@ fn draw_voters(frame: &mut Frame, area: Rect, app: &mut App) {
             ListItem::new(format!(
                 "{} {}{}",
                 if v.key.is_some() { "[x]" } else { "[ ]" },
-                v.contact,
+                v.full_name, 
                 if v.registered { " (registered)" } else { "" }
             ))
         })
@@ -2132,12 +2306,35 @@ mod tests {
     #[test]
     fn allocation_is_unique_and_transactional() {
         let mut app = App::default();
-        app.add_voters(["a@example.com".into(), "b@example.com".into()]);
+
+        app.voters = vec![
+            Voter {
+                full_name: "First Voter".into(),
+                email: "a@example.com".into(),
+                phone_number: "1234567890".into(),
+                registered: true,
+                key: None,
+            },
+            Voter {
+                full_name: "Second Voter".into(),
+                email: "b@example.com".into(),
+                phone_number: "0987654321".into(),
+                registered: true,
+                key: None,
+            },
+        ];
+
+        // Insufficient keys: assignment must fail without partial changes.
         app.imported_keys = vec!["key-1".into()];
+
         assert!(app.assign_keys().is_err());
         assert!(app.voters.iter().all(|v| v.key.is_none()));
+
+        // Enough keys: each voter receives a different key.
         app.imported_keys.push("key-2".into());
-        assert!(app.assign_keys().is_ok());
+
+        app.assign_keys().expect("Key assignment should succeed");
+
         assert_ne!(app.voters[0].key, app.voters[1].key);
         assert!(app.voters.iter().all(|v| v.key.is_some()));
     }
@@ -2145,15 +2342,32 @@ mod tests {
     #[test]
     fn ballot_cannot_be_submitted_twice() {
         let mut app = App::default();
-        app.add_voters(["a@example.com".into()]);
+
+        // One voter is enough to test duplicate ballot submission.
+        app.voters = vec![Voter {
+            full_name: "Test Voter".into(),
+            email: "a@example.com".into(),
+            phone_number: "1234567890".into(),
+            registered: true,
+            key: None,
+        }];
+
         app.imported_keys.push("test-key".into());
-        app.assign_keys().unwrap();
-        app.create_election().unwrap();
-        let e = app.election.as_mut().unwrap();
-        start_election(e).unwrap();
-        assert!(submit_ballot(e, "test-key", &[Some(0), Some(1), Some(0)]).is_ok());
-        assert!(submit_ballot(e, "test-key", &[Some(0), Some(1), Some(0)]).is_err());
-        stop_election(e).unwrap();
-        assert_eq!(e.positions[0].candidates[0].votes, 1);
+
+        app.assign_keys().expect("Key assignment should succeed");
+        app.create_election().expect("Election creation should succeed");
+
+        let election = app.election.as_mut().expect("Election should exist");
+
+        start_election(election).expect("Election should open");
+
+        let choices = [Some(0), Some(1), Some(0)];
+
+        assert!(submit_ballot(election, "test-key", &choices).is_ok());
+        assert!(submit_ballot(election, "test-key", &choices).is_err());
+
+        stop_election(election).expect("Election should close");
+
+        assert_eq!(election.positions[0].candidates[0].votes, 1);
     }
 }
