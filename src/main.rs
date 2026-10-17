@@ -11,7 +11,10 @@ use ratatui::{
 };
 use rusqlite::Connection;
 use sha2::{Digest, Sha256};
+use std::io::Error;
 use std::{collections::HashSet, fs, io, time::Duration};
+use tracing::{info, instrument, Level};
+use tracing_subscriber::fmt;
 use uuid::Uuid;
 
 const ACTIVE: Color = Color::Cyan;
@@ -339,16 +342,18 @@ fn generate_keys(count: usize) -> Result<Vec<String>, String> {
         .map(|_| format!("KEY-{}", Uuid::new_v4().simple()))
         .collect())
 }
-
+#[instrument]
 fn start_election(e: &mut Election) -> Result<(), String> {
+    info!("Election started.");
     if e.phase != Phase::Pending {
         return Err("Election must be waiting to start".into());
     }
     e.phase = Phase::Running;
     Ok(())
 }
-
+#[instrument]
 fn stop_election(e: &mut Election) -> Result<(), String> {
+    info!("Election stopped.");
     if e.phase != Phase::Running {
         return Err("Only a running election can be finished".into());
     }
@@ -2114,8 +2119,26 @@ fn run(mut terminal: DefaultTerminal) -> io::Result<()> {
     }
     Ok(())
 }
+// [LOGGING]
+// events are single points in time, spans are started/stopped.
+// Macros for logging are: info!, error!, warn!, info!, debug!, trace!. they need to be
+// imported, so if you need one that isn't imported, add it.
+// fields should be structured, so info!(voter = %v, "Vote cast") rather than string formatters
+// using the #[instrument] attribute automatically logs function parameters as fields
+// so you can put the macro before a function and create a log entry by adding a
+// logging macro in the function body without needing to specify the fields
+// sensitive data is omitted using #[instrument(skip(secret_key, password))] this
+// is used to prevent storing sensitive data in logs
 
 fn main() -> io::Result<()> {
+    let file_appender = tracing_appender::rolling::hourly("/tmp", "prefix.log");
+    let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+    tracing_subscriber::fmt()
+        .with_writer(non_blocking)
+        .with_ansi(false)
+        .init();
+    info!("The voting machine is alive!");
+
     let terminal = ratatui::init();
     let result = run(terminal);
     ratatui::restore();
