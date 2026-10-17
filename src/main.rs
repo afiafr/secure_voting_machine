@@ -1,5 +1,7 @@
-use std::{collections::HashSet, fs, io, time::Duration};
+mod auth;
 
+use std::{collections::HashSet, fs, io, time::Duration};
+use rusqlite::Connection;
 use arboard::Clipboard;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::{
@@ -28,6 +30,18 @@ struct Position {
     name: String,
     candidates: Vec<Candidate>,
     next_candidate: usize,
+}
+
+enum SignupFocus {
+    Email,
+    PhoneNumber,
+    FullName,
+    Password,
+}
+
+enum LoginFocus {
+    Email,
+    Password,
 }
 
 impl Position {
@@ -91,6 +105,7 @@ enum Screen {
     Admin,
     District,
     Vote,
+    SystemAdmin,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -210,7 +225,16 @@ struct App {
     voting_scroll: usize,
     modal: Option<Modal>,
     notice: String,
-}
+    authenticated: bool,
+    login_email: String,
+    login_password: String,
+    login_focus: LoginFocus,
+    signup_focus: SignupFocus,
+    conn: Option<Connection>,
+    login_phone_number: String,
+    login_full_name: String,
+    login_role: String,
+    }
 
 impl Default for App {
     fn default() -> Self {
@@ -242,6 +266,15 @@ impl Default for App {
             voting_scroll: 0,
             modal: None,
             notice: "The real security is the friends we make along the way.".into(),
+            authenticated: false,
+            login_email: String::new(),
+            login_password: String::new(),
+            login_focus: LoginFocus::Email,
+            signup_focus: SignupFocus::Email,
+            login_phone_number: String::new(),
+            login_full_name: String::new(),
+            conn: None,
+            login_role: "Administrator".into(),
         }
     }
 }
@@ -347,6 +380,67 @@ fn submit_ballot(e: &mut Election, key: &str, choices: &[Option<usize>]) -> Resu
     e.submitted.insert(key.to_owned());
     Ok(())
 }
+
+fn draw_login(frame: &mut Frame, area: Rect, app: &App) {
+    let sections = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Length(3),
+        Constraint::Length(3),
+        Constraint::Min(2),
+    ])
+    .margin(1)
+    .split(area);
+
+    frame.render_widget(
+        Paragraph::new(format!("Sign in to your {} account", app.login_role))
+            .alignment(Alignment::Center),
+        sections[0],
+    );
+
+    let email_focused = matches!(app.login_focus, LoginFocus::Email);
+    let password_focused = matches!(app.login_focus, LoginFocus::Password);
+
+    let email_block = Block::bordered()
+        .title_top(if email_focused { "Email • typing" } else { "Email" })
+        .border_style(
+            Style::new().fg(if email_focused { ACTIVE } else { MUTED }),
+        );
+
+    frame.render_widget(
+        Paragraph::new(app.login_email.as_str()).block(email_block),
+        sections[1],
+    );
+
+    // Never display the actual password.
+    let masked_password = "*".repeat(app.login_password.chars().count());
+
+    let password_block = Block::bordered()
+        .title_top(if password_focused {
+            "Password • typing"
+        } else {
+            "Password"
+        })
+        .border_style(
+            Style::new().fg(if password_focused { ACTIVE } else { MUTED }),
+        );
+
+    frame.render_widget(
+        Paragraph::new(masked_password).block(password_block),
+        sections[2],
+    );
+
+    frame.render_widget(
+        Paragraph::new(
+            "Tab: switch field | Enter: sign in | Esc: return\n\
+             Administrator access requires successful verification.",
+        )
+        .alignment(Alignment::Center)
+        .wrap(Wrap { trim: true })
+        .style(Style::new().fg(Color::Gray)),
+        sections[3],
+    );
+}
+
 
 impl App {
     fn info(&mut self, title: &str, message: impl Into<String>) {
@@ -680,6 +774,7 @@ impl App {
         }
         match self.screen {
             Screen::Main => self.handle_main(key),
+            Screen::SystemAdmin => self.handle_system_admin(key),
             Screen::Admin => self.handle_admin(key),
             Screen::District => self.handle_district(key),
             Screen::Vote => self.handle_vote(key),
@@ -689,11 +784,12 @@ impl App {
     fn handle_main(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Up => self.main_selected = self.main_selected.saturating_sub(1),
-            KeyCode::Down => self.main_selected = (self.main_selected + 1).min(2),
+            KeyCode::Down => self.main_selected = (self.main_selected + 1).min(3),
             KeyCode::Char(' ') | KeyCode::Enter => {
                 self.screen = match self.main_selected {
-                    0 => Screen::Admin,
-                    1 => Screen::District,
+                    0 => Screen::SystemAdmin,
+                    1 => Screen::Admin,
+                    2 => Screen::District,
                     _ => Screen::Vote,
                 };
             }
@@ -702,7 +798,210 @@ impl App {
         }
     }
 
+    fn submit_signup(&mut self) {
+        let Some(conn) = self.conn.as_ref() else {
+            self.info("Sign up Error", "Database connection is unavailable.");
+            return;
+        };
+
+        let result = crate::auth::login::register_user(
+            conn,
+            self.login_email.trim(),
+            self.login_phone_number.trim(),
+            self.login_role.trim(),
+            self.login_full_name.trim(),
+            &self.login_password,
+        );
+
+        self.login_password.clear();
+
+        match result {
+            Ok(true) => {
+                // Password verified, but admin access is NOT granted yet.
+                //
+                // Next:
+                // 1. Check this user's stored database role is Admin.
+                // 2. Complete OTP verification if required.
+                // 3. Only after both succeed:
+                //    self.authenticated = true;
+
+                self.notice =
+                    "Account created successfully"
+                        .into();
+            }
+
+            Ok(false) => {
+                self.info("Sign up Failed", "Unable to create your account. Please try again.");
+            }
+
+            Err(err ) => {
+                self.info(
+                    "Sign Up Error",
+                    err.to_string(),
+                );
+            }
+        }
+    }
+
+    fn submit_admin_login(&mut self) {
+        let Some(conn) = self.conn.as_ref() else {
+            self.info("Login Error", "Database connection is unavailable.");
+            return;
+        };
+
+        let result = crate::auth::login::handle_login(
+            conn,
+            self.login_email.trim(),
+            &self.login_password,
+        );
+
+        self.login_password.clear();
+
+        match result {
+            Ok(true) => {
+                // Password verified, but admin access is NOT granted yet.
+                //
+                // Next:
+                // 1. Check this user's stored database role is Admin.
+                // 2. Complete OTP verification if required.
+                // 3. Only after both succeed:
+                //    self.authenticated = true;
+
+                self.authenticated = true;
+            }
+
+            Ok(false) => {
+                self.info("Login Failed", "Invalid email or password.");
+            }
+
+            Err(_) => {
+                self.info(
+                    "Login Error",
+                    "Unable to verify your login. Please try again.",
+                );
+            }
+        }
+    }
+
+    fn handle_admin_login(&mut self, key: KeyEvent) {
+        // Ignore key-release events.
+        if key.kind != KeyEventKind::Press {
+            return;
+        }
+
+        match key.code {
+            KeyCode::Tab | KeyCode::BackTab => {
+                self.login_focus = match self.login_focus {
+                    LoginFocus::Email => LoginFocus::Password,
+                    LoginFocus::Password => LoginFocus::Email,
+                };
+            }
+
+            KeyCode::Char(c)
+                if !key.modifiers.intersects(
+                    KeyModifiers::CONTROL | KeyModifiers::ALT,
+                ) =>
+            {
+                match self.login_focus {
+                    LoginFocus::Email => self.login_email.push(c),
+                    LoginFocus::Password => self.login_password.push(c),
+                }
+            }
+
+            KeyCode::Backspace => {
+                match self.login_focus {
+                    LoginFocus::Email => {
+                        self.login_email.pop();
+                    }
+                    LoginFocus::Password => {
+                        self.login_password.pop();
+                    }
+                }
+            }
+
+            KeyCode::Enter => self.submit_admin_login(),
+
+            KeyCode::Esc => {
+                self.login_password.clear();
+                self.confirm(
+                    "Leave Admin Login?",
+                    "Return to the main menu?",
+                    ConfirmAction::ExitAdmin,
+                );
+            }
+
+            _ => {}
+        }
+    }
+
+    fn handle_system_admin(&mut self, key: KeyEvent) {
+        // Ignore key-release events.
+        if key.kind != KeyEventKind::Press {
+            return;
+        }
+
+        match key.code {
+            KeyCode::Tab | KeyCode::BackTab => {
+                self.signup_focus = match self.signup_focus {
+                    SignupFocus::Email => SignupFocus::Password,
+                    SignupFocus::Password => SignupFocus::PhoneNumber,
+                    SignupFocus::PhoneNumber => SignupFocus::FullName,
+                    SignupFocus::FullName => SignupFocus::Email,
+                };
+            }
+
+            KeyCode::Char(c)
+                if !key.modifiers.intersects(
+                    KeyModifiers::CONTROL | KeyModifiers::ALT,
+                ) =>
+            {
+                match self.signup_focus {
+                    SignupFocus::Email => self.login_email.push(c),
+                    SignupFocus::PhoneNumber => self.login_phone_number.push(c),
+                    SignupFocus::Password => self.login_password.push(c),
+                    SignupFocus::FullName => self.login_full_name.push(c),
+                }
+            }
+
+            KeyCode::Backspace => {
+                match self.signup_focus {
+                    SignupFocus::Email => {
+                        self.login_email.pop();
+                    }
+                    SignupFocus::PhoneNumber => {
+                        self.login_phone_number.pop();
+                    }
+                    SignupFocus::FullName => {
+                        self.login_full_name.pop();
+                    }
+                    SignupFocus::Password => {
+                        self.login_password.pop();
+                    }
+                }
+            }
+
+            KeyCode::Enter => self.submit_signup(),
+
+            KeyCode::Esc => {
+                self.login_password.clear();
+                self.confirm(
+                    "Leave Admin Signup?",
+                    "Return to the main menu?",
+                    ConfirmAction::ExitAdmin,
+                );
+            }
+
+            _ => {}
+        }
+    }
+
     fn handle_admin(&mut self, key: KeyEvent) {
+        // While unauthenticated, send all input to the login form.
+        if !self.authenticated {
+            self.handle_admin_login(key);
+            return;
+        }
+
         // Some terminal emulators cannot distinguish Shift+Enter from Enter.
         if key.code == KeyCode::Enter
             && key
@@ -1134,7 +1433,13 @@ impl App {
 
     fn finish_confirm(&mut self, action: ConfirmAction) -> Result<(), String> {
         match action {
-            ConfirmAction::ExitAdmin => self.screen = Screen::Main,
+            ConfirmAction::ExitAdmin => {
+                self.authenticated = false;
+                self.login_email.clear();
+                self.login_password.clear();
+                self.login_focus = LoginFocus::Email;
+                self.screen = Screen::Main;
+            }
             ConfirmAction::CreateElection => self.create_election()?,
             ConfirmAction::StartElection => {
                 let e = self
@@ -1232,6 +1537,7 @@ fn draw(frame: &mut Frame, app: &mut App) {
     .split(bounds);
     let title = match app.screen {
         Screen::Main => "(Secure) VOTING MACHINE",
+        Screen::SystemAdmin => "System Administrator",
         Screen::Admin => "Election Administrator",
         Screen::District => "District Official",
         Screen::Vote => "Vote!",
@@ -1239,9 +1545,31 @@ fn draw(frame: &mut Frame, app: &mut App) {
     headline(frame, page[0], title);
     match app.screen {
         Screen::Main => draw_main(frame, page[1], app),
-        Screen::Admin => draw_admin(frame, page[1], app),
-        Screen::District => draw_district(frame, page[1], app),
-        Screen::Vote => draw_vote(frame, page[1], app),
+        Screen::SystemAdmin => draw_system_admin(frame, page[1], app),
+        Screen::Admin => {
+            app.login_role = "Administrator".into();
+            if app.authenticated {
+                draw_admin(frame, page[1], app);
+            } else {
+                draw_login(frame, page[1], app);
+            }
+        },
+        Screen::District => {
+            app.login_role = "District Official".into();
+            if app.authenticated {
+                draw_district(frame, page[1], app);
+            } else {
+                draw_login(frame, page[1], app);
+            }
+        },
+        Screen::Vote => {
+            app.login_role = "Voter".into();
+            if app.authenticated {
+                draw_vote(frame, page[1], app);
+            } else {
+                draw_login(frame, page[1], app);
+            }
+        },
     }
     frame.render_widget(
         Paragraph::new(app.notice.as_str())
@@ -1261,13 +1589,101 @@ fn draw_main(frame: &mut Frame, area: Rect, app: &App) {
     );
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
-    let items = ["Election Administrator", "District Official", "Vote!"];
+    let items = ["System Administrator", "Election Administrator", "District Official", "Vote!"];
     let list = List::new(items)
         .highlight_style(HIGHLIGHT)
         .highlight_symbol("  > ");
     let mut state = ListState::default();
     state.select(Some(app.main_selected));
     frame.render_stateful_widget(list, inner, &mut state);
+}
+
+fn draw_system_admin(frame: &mut Frame, area: Rect, app: &App) {
+    let sections = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Length(3),
+        Constraint::Length(3),
+        Constraint::Length(3),
+        Constraint::Length(3),
+        Constraint::Min(2),
+    ])
+    .margin(1)
+    .split(area);
+
+    frame.render_widget(
+        Paragraph::new("Sign up your administrator account")
+            .alignment(Alignment::Center),
+        sections[0],
+    );
+
+    let email_focused = matches!(app.signup_focus, SignupFocus::Email);
+    let password_focused = matches!(app.signup_focus, SignupFocus::Password);
+
+    let email_block = Block::bordered()
+        .title_top(if email_focused { "Email • typing" } else { "Email" })
+        .border_style(
+            Style::new().fg(if email_focused { ACTIVE } else { MUTED }),
+        );
+
+    frame.render_widget(
+        Paragraph::new(app.login_email.as_str()).block(email_block),
+        sections[1],
+    );
+
+    // Never display the actual password.
+    let masked_password = "*".repeat(app.login_password.chars().count());
+
+    let password_block = Block::bordered()
+        .title_top(if password_focused {
+            "Password • typing"
+        } else {
+            "Password"
+        })
+        .border_style(
+            Style::new().fg(if password_focused { ACTIVE } else { MUTED }),
+        );
+
+    frame.render_widget(
+        Paragraph::new(masked_password).block(password_block),
+        sections[2],
+    );
+
+    let phone_number_focused = matches!(app.signup_focus, SignupFocus::PhoneNumber);
+    let full_name_focused = matches!(app.signup_focus, SignupFocus::FullName);
+
+    let phone_number_block = Block::bordered()
+        .title_top(if phone_number_focused { "Phone Number • typing" } else { "Phone Number" })
+        .border_style(
+            Style::new().fg(if phone_number_focused { ACTIVE } else { MUTED }),
+        );
+
+    frame.render_widget(
+        Paragraph::new(app.login_phone_number.as_str()).block(phone_number_block),
+        sections[3],
+    );
+
+    let full_name_block = Block::bordered()
+        .title_top(if full_name_focused { "Full Name • typing" } else { "Full Name" })
+        .border_style(
+            Style::new().fg(if full_name_focused { ACTIVE } else { MUTED }),
+        );
+
+    frame.render_widget(
+        Paragraph::new(app.login_full_name.as_str()).block(full_name_block),
+        sections[4],
+    );
+
+
+    frame.render_widget(
+        Paragraph::new(
+            "Tab: switch field | Enter: sign in | Esc: return\n\
+            Administrator access requires successful verification.",
+        )
+        .alignment(Alignment::Center)
+        .wrap(Wrap { trim: true })
+        .style(Style::new().fg(Color::Gray)),
+        sections[5],
+    );
 }
 
 fn draw_admin(frame: &mut Frame, area: Rect, app: &mut App) {
@@ -1671,6 +2087,11 @@ fn draw_modal(frame: &mut Frame, area: Rect, modal: &Modal) {
 
 fn run(mut terminal: DefaultTerminal) -> io::Result<()> {
     let mut app = App::default();
+    app.conn = Some(
+        auth::login::initialize_database()
+            .map_err(|err| io::Error::other(err.to_string()))?,
+    );
+
     loop {
         terminal.draw(|f| draw(f, &mut app))?;
         if app.quit {
