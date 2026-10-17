@@ -1,17 +1,17 @@
 mod auth;
 
-use std::{collections::HashSet, fs, io, time::Duration};
-use rusqlite::Connection;
 use arboard::Clipboard;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::{
-    DefaultTerminal, Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
     widgets::{Block, Clear, List, ListItem, ListState, Paragraph, Wrap},
+    DefaultTerminal, Frame,
 };
+use rusqlite::Connection;
 use sha2::{Digest, Sha256};
+use std::{collections::HashSet, fs, io, time::Duration};
 use uuid::Uuid;
 
 const ACTIVE: Color = Color::Cyan;
@@ -234,7 +234,7 @@ struct App {
     login_phone_number: String,
     login_full_name: String,
     login_role: String,
-    }
+}
 
 impl Default for App {
     fn default() -> Self {
@@ -401,10 +401,12 @@ fn draw_login(frame: &mut Frame, area: Rect, app: &App) {
     let password_focused = matches!(app.login_focus, LoginFocus::Password);
 
     let email_block = Block::bordered()
-        .title_top(if email_focused { "Email • typing" } else { "Email" })
-        .border_style(
-            Style::new().fg(if email_focused { ACTIVE } else { MUTED }),
-        );
+        .title_top(if email_focused {
+            "Email • typing"
+        } else {
+            "Email"
+        })
+        .border_style(Style::new().fg(if email_focused { ACTIVE } else { MUTED }));
 
     frame.render_widget(
         Paragraph::new(app.login_email.as_str()).block(email_block),
@@ -420,9 +422,7 @@ fn draw_login(frame: &mut Frame, area: Rect, app: &App) {
         } else {
             "Password"
         })
-        .border_style(
-            Style::new().fg(if password_focused { ACTIVE } else { MUTED }),
-        );
+        .border_style(Style::new().fg(if password_focused { ACTIVE } else { MUTED }));
 
     frame.render_widget(
         Paragraph::new(masked_password).block(password_block),
@@ -440,7 +440,6 @@ fn draw_login(frame: &mut Frame, area: Rect, app: &App) {
         sections[3],
     );
 }
-
 
 impl App {
     fn info(&mut self, title: &str, message: impl Into<String>) {
@@ -825,20 +824,18 @@ impl App {
                 // 3. Only after both succeed:
                 //    self.authenticated = true;
 
-                self.notice =
-                    "Account created successfully"
-                        .into();
+                self.notice = "Account created successfully".into();
             }
 
             Ok(false) => {
-                self.info("Sign up Failed", "Unable to create your account. Please try again.");
+                self.info(
+                    "Sign up Failed",
+                    "Unable to create your account. Please try again.",
+                );
             }
 
-            Err(err ) => {
-                self.info(
-                    "Sign Up Error",
-                    err.to_string(),
-                );
+            Err(err) => {
+                self.info("Sign Up Error", err.to_string());
             }
         }
     }
@@ -849,11 +846,8 @@ impl App {
             return;
         };
 
-        let result = crate::auth::login::handle_login(
-            conn,
-            self.login_email.trim(),
-            &self.login_password,
-        );
+        let result =
+            crate::auth::login::handle_login(conn, self.login_email.trim(), &self.login_password);
 
         self.login_password.clear();
 
@@ -898,9 +892,9 @@ impl App {
             }
 
             KeyCode::Char(c)
-                if !key.modifiers.intersects(
-                    KeyModifiers::CONTROL | KeyModifiers::ALT,
-                ) =>
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
             {
                 match self.login_focus {
                     LoginFocus::Email => self.login_email.push(c),
@@ -908,16 +902,14 @@ impl App {
                 }
             }
 
-            KeyCode::Backspace => {
-                match self.login_focus {
-                    LoginFocus::Email => {
-                        self.login_email.pop();
-                    }
-                    LoginFocus::Password => {
-                        self.login_password.pop();
-                    }
+            KeyCode::Backspace => match self.login_focus {
+                LoginFocus::Email => {
+                    self.login_email.pop();
                 }
-            }
+                LoginFocus::Password => {
+                    self.login_password.pop();
+                }
+            },
 
             KeyCode::Enter => self.submit_admin_login(),
 
@@ -951,9 +943,9 @@ impl App {
             }
 
             KeyCode::Char(c)
-                if !key.modifiers.intersects(
-                    KeyModifiers::CONTROL | KeyModifiers::ALT,
-                ) =>
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
             {
                 match self.signup_focus {
                     SignupFocus::Email => self.login_email.push(c),
@@ -963,22 +955,20 @@ impl App {
                 }
             }
 
-            KeyCode::Backspace => {
-                match self.signup_focus {
-                    SignupFocus::Email => {
-                        self.login_email.pop();
-                    }
-                    SignupFocus::PhoneNumber => {
-                        self.login_phone_number.pop();
-                    }
-                    SignupFocus::FullName => {
-                        self.login_full_name.pop();
-                    }
-                    SignupFocus::Password => {
-                        self.login_password.pop();
-                    }
+            KeyCode::Backspace => match self.signup_focus {
+                SignupFocus::Email => {
+                    self.login_email.pop();
                 }
-            }
+                SignupFocus::PhoneNumber => {
+                    self.login_phone_number.pop();
+                }
+                SignupFocus::FullName => {
+                    self.login_full_name.pop();
+                }
+                SignupFocus::Password => {
+                    self.login_password.pop();
+                }
+            },
 
             KeyCode::Enter => self.submit_signup(),
 
@@ -1553,7 +1543,7 @@ fn draw(frame: &mut Frame, app: &mut App) {
             } else {
                 draw_login(frame, page[1], app);
             }
-        },
+        }
         Screen::District => {
             app.login_role = "District Official".into();
             if app.authenticated {
@@ -1561,7 +1551,7 @@ fn draw(frame: &mut Frame, app: &mut App) {
             } else {
                 draw_login(frame, page[1], app);
             }
-        },
+        }
         Screen::Vote => {
             app.login_role = "Voter".into();
             if app.authenticated {
@@ -1569,7 +1559,7 @@ fn draw(frame: &mut Frame, app: &mut App) {
             } else {
                 draw_login(frame, page[1], app);
             }
-        },
+        }
     }
     frame.render_widget(
         Paragraph::new(app.notice.as_str())
@@ -1589,13 +1579,30 @@ fn draw_main(frame: &mut Frame, area: Rect, app: &App) {
     );
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
-    let items = ["System Administrator", "Election Administrator", "District Official", "Vote!"];
-    let list = List::new(items)
-        .highlight_style(HIGHLIGHT)
-        .highlight_symbol("  > ");
+    let items = [
+        "System Administrator",
+        "Election Administrator",
+        "District Official",
+        "Vote!",
+    ];
+    let list = List::new(
+        items
+            .iter()
+            .map(|item| ListItem::new(Line::from(*item).centered()))
+            .collect::<Vec<_>>(),
+    )
+    .highlight_style(HIGHLIGHT);
     let mut state = ListState::default();
     state.select(Some(app.main_selected));
-    frame.render_stateful_widget(list, inner, &mut state);
+    let list_height = items.len() as u16;
+
+    let list_area = Rect {
+        x: inner.x,
+        y: inner.y + inner.height.saturating_sub(list_height) / 2,
+        width: inner.width,
+        height: inner.height.min(list_height),
+    };
+    frame.render_stateful_widget(list, list_area, &mut state);
 }
 
 fn draw_system_admin(frame: &mut Frame, area: Rect, app: &App) {
@@ -1611,8 +1618,7 @@ fn draw_system_admin(frame: &mut Frame, area: Rect, app: &App) {
     .split(area);
 
     frame.render_widget(
-        Paragraph::new("Sign up your administrator account")
-            .alignment(Alignment::Center),
+        Paragraph::new("Sign up your administrator account").alignment(Alignment::Center),
         sections[0],
     );
 
@@ -1620,10 +1626,12 @@ fn draw_system_admin(frame: &mut Frame, area: Rect, app: &App) {
     let password_focused = matches!(app.signup_focus, SignupFocus::Password);
 
     let email_block = Block::bordered()
-        .title_top(if email_focused { "Email • typing" } else { "Email" })
-        .border_style(
-            Style::new().fg(if email_focused { ACTIVE } else { MUTED }),
-        );
+        .title_top(if email_focused {
+            "Email • typing"
+        } else {
+            "Email"
+        })
+        .border_style(Style::new().fg(if email_focused { ACTIVE } else { MUTED }));
 
     frame.render_widget(
         Paragraph::new(app.login_email.as_str()).block(email_block),
@@ -1639,9 +1647,7 @@ fn draw_system_admin(frame: &mut Frame, area: Rect, app: &App) {
         } else {
             "Password"
         })
-        .border_style(
-            Style::new().fg(if password_focused { ACTIVE } else { MUTED }),
-        );
+        .border_style(Style::new().fg(if password_focused { ACTIVE } else { MUTED }));
 
     frame.render_widget(
         Paragraph::new(masked_password).block(password_block),
@@ -1652,10 +1658,12 @@ fn draw_system_admin(frame: &mut Frame, area: Rect, app: &App) {
     let full_name_focused = matches!(app.signup_focus, SignupFocus::FullName);
 
     let phone_number_block = Block::bordered()
-        .title_top(if phone_number_focused { "Phone Number • typing" } else { "Phone Number" })
-        .border_style(
-            Style::new().fg(if phone_number_focused { ACTIVE } else { MUTED }),
-        );
+        .title_top(if phone_number_focused {
+            "Phone Number • typing"
+        } else {
+            "Phone Number"
+        })
+        .border_style(Style::new().fg(if phone_number_focused { ACTIVE } else { MUTED }));
 
     frame.render_widget(
         Paragraph::new(app.login_phone_number.as_str()).block(phone_number_block),
@@ -1663,16 +1671,17 @@ fn draw_system_admin(frame: &mut Frame, area: Rect, app: &App) {
     );
 
     let full_name_block = Block::bordered()
-        .title_top(if full_name_focused { "Full Name • typing" } else { "Full Name" })
-        .border_style(
-            Style::new().fg(if full_name_focused { ACTIVE } else { MUTED }),
-        );
+        .title_top(if full_name_focused {
+            "Full Name • typing"
+        } else {
+            "Full Name"
+        })
+        .border_style(Style::new().fg(if full_name_focused { ACTIVE } else { MUTED }));
 
     frame.render_widget(
         Paragraph::new(app.login_full_name.as_str()).block(full_name_block),
         sections[4],
     );
-
 
     frame.render_widget(
         Paragraph::new(
@@ -2087,10 +2096,8 @@ fn draw_modal(frame: &mut Frame, area: Rect, modal: &Modal) {
 
 fn run(mut terminal: DefaultTerminal) -> io::Result<()> {
     let mut app = App::default();
-    app.conn = Some(
-        auth::login::initialize_database()
-            .map_err(|err| io::Error::other(err.to_string()))?,
-    );
+    app.conn =
+        Some(auth::login::initialize_database().map_err(|err| io::Error::other(err.to_string()))?);
 
     loop {
         terminal.draw(|f| draw(f, &mut app))?;
