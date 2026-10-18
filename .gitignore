@@ -1,1 +1,7 @@
-/target
+/target/
+.env
+*.db
+*.db-shm
+*.db-wal
+/virtual_sms/
+/tls-dev/
