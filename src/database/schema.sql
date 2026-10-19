@@ -165,14 +165,32 @@ CREATE TABLE IF NOT EXISTS notification_outbox (
  notification_id INTEGER PRIMARY KEY, phone TEXT NOT NULL, message TEXT NOT NULL,
  delivered INTEGER NOT NULL DEFAULT 0 CHECK(delivered IN (0,1))
 );
-CREATE TRIGGER IF NOT EXISTS notify_audit_event AFTER INSERT ON audit_events
-WHEN NEW.severity>0 OR NEW.event_type IN ('election_created','position_added','position_updated','position_deleted',
- 'candidate_added','candidate_updated','candidate_unlinked','candidate_linked','election_opened','election_closed',
- 'election_tallied','results_announced','login_succeeded','engineer_provisioned_account')
+
+DROP TRIGGER IF EXISTS notify_audit_event;
+CREATE TABLE IF NOT EXISTS security_events (
+ id INTEGER PRIMARY KEY, user_id INTEGER REFERENCES users(id), event_type TEXT NOT NULL,
+ scope TEXT, attempts INTEGER NOT NULL DEFAULT 0, occurred_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS email_outbox (
+ id INTEGER PRIMARY KEY, recipient TEXT NOT NULL, event_id INTEGER NOT NULL REFERENCES audit_events(event_id),
+ delivered INTEGER NOT NULL DEFAULT 0 CHECK(delivered IN (0,1)), UNIQUE(recipient,event_id)
+);
+CREATE TABLE IF NOT EXISTS system_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+INSERT OR IGNORE INTO system_settings VALUES ('system_email','systemadmin@gmail.com');
+CREATE TRIGGER IF NOT EXISTS security_no_update BEFORE UPDATE ON security_events BEGIN SELECT RAISE(ABORT,'Security events are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS security_no_delete BEFORE DELETE ON security_events BEGIN SELECT RAISE(ABORT,'Security events are append-only'); END;
+CREATE TRIGGER notify_audit_event AFTER INSERT ON audit_events
 BEGIN
+ INSERT OR IGNORE INTO email_outbox(recipient,event_id)
+ SELECT value,NEW.event_id FROM system_settings WHERE key='system_email' AND NEW.severity>0;
+ INSERT OR IGNORE INTO email_outbox(recipient,event_id)
+ SELECT u.email,NEW.event_id FROM users u WHERE u.active=1 AND u.role='admin' AND (
+ u.id=(SELECT created_by FROM elections WHERE election_id=NEW.election_id) OR
+ u.id=NEW.actor_user_id OR
+ EXISTS(SELECT 1 FROM election_voters v JOIN elections e USING(election_id) WHERE v.user_id=NEW.actor_user_id AND e.created_by=u.id));
+ -- DO receives only lifecycle/configuration notices; no participation/authentication feed.
  INSERT INTO notification_outbox(phone,message)
- SELECT phone_number, 'Event: '||NEW.event_type||' | level '||NEW.severity||' | '||NEW.occurred_at
- FROM users WHERE active=1 AND role IN ('admin','district_official');
- INSERT INTO notification_outbox(phone,message)
- VALUES ('engineer', 'Event: '||NEW.event_type||' | level '||NEW.severity||' | '||NEW.occurred_at);
+ SELECT phone_number,'Event: '||NEW.event_type||' | '||NEW.occurred_at FROM users
+ WHERE active=1 AND role='district_official' AND NEW.event_type IN
+ ('election_created','position_added','position_updated','position_deleted','candidate_added','candidate_updated','candidate_unlinked','candidate_linked','election_opened','election_closed','election_tallied','results_announced');
 END;

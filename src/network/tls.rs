@@ -20,6 +20,7 @@ pub struct Certificates {
     pub gateways: [Identity; 3],
 }
 impl Certificates {
+    /// Generate a private development CA, server identity and three distinct gateway identities.
     pub fn generate() -> AppResult<Self> {
         let ca_key = KeyPair::generate()?;
         let mut params = CertificateParams::new(vec![])?;
@@ -48,6 +49,7 @@ impl Certificates {
         })
     }
     // The CA signing key is deliberately not persisted. Rotate the whole dev bundle.
+    /// Write the certificate bundle with private permissions; refuse to overwrite an existing bundle.
     pub fn save(&self, path: &std::path::Path) -> AppResult<()> {
         std::fs::create_dir(path)?; // Refuse to overwrite an existing identity directory.
         #[cfg(unix)]
@@ -78,6 +80,7 @@ impl Certificates {
         }
         Ok(())
     }
+    /// Read an existing development certificate/key bundle.
     pub fn load(path: &std::path::Path) -> AppResult<Self> {
         let get = |name: &str| -> AppResult<Identity> {
             Ok(Identity {
@@ -91,6 +94,7 @@ impl Certificates {
             gateways: [get("admin")?, get("district")?, get("voter")?],
         })
     }
+    /// Configure TLS 1.3, optionally requiring trusted client certificates.
     pub fn server_config(&self, mutual: bool) -> AppResult<Arc<rustls::ServerConfig>> {
         let builder =
             rustls::ServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS13]);
@@ -108,11 +112,13 @@ impl Certificates {
         )?))
     }
 }
+/// Build the explicit trust store from this project’s CA certificate.
 fn roots(ca: &[u8]) -> AppResult<RootCertStore> {
     let mut roots = RootCertStore::empty();
     roots.add(CertificateDer::from(ca.to_vec()))?;
     Ok(roots)
 }
+/// Configure TLS 1.3 CA verification and optional gateway client authentication.
 pub fn client_config(
     ca: &[u8],
     identity: Option<&Identity>,
@@ -127,11 +133,13 @@ pub fn client_config(
         None => builder.with_no_client_auth(),
     }))
 }
+/// Connect with a bounded TCP timeout and configure blocking I/O.
 pub fn socket(address: SocketAddr) -> AppResult<TcpStream> {
     let socket = TcpStream::connect_timeout(&address, Duration::from_secs(3))?;
     configure(&socket)?;
     Ok(socket)
 }
+/// Restore blocking mode explicitly and apply TCP/socket timeouts.
 pub fn configure(socket: &TcpStream) -> AppResult<()> {
     // Accepted sockets can inherit the listener's nonblocking mode on macOS/BSD.
     // Each TLS worker uses blocking I/O with deadlines, not an async readiness loop.
@@ -155,12 +163,15 @@ impl DeadlineSocket {
             idle_timeout: Duration::from_secs(5),
         }
     }
-    /// Password hashing can exceed the short request-read budget in debug builds.
-    /// Keep a finite response budget, while retaining stricter inbound limits.
+    /// Preserve the original deadline across handshake, request and response.
     pub fn begin_response(&mut self) {
-        self.deadline = Instant::now() + Duration::from_secs(60);
-        self.idle_timeout = Duration::from_secs(60);
+        self.idle_timeout = Duration::from_secs(10);
     }
+    /// Shorten the socket deadline without ever extending its original budget.
+    pub fn limit(&mut self, deadline: Instant) {
+        self.deadline = self.deadline.min(deadline);
+    }
+    /// Return the remaining monotonic request budget or a timeout error.
     fn remaining(&self) -> std::io::Result<Duration> {
         self.deadline
             .checked_duration_since(Instant::now())
@@ -174,6 +185,7 @@ impl DeadlineSocket {
     }
 }
 impl Read for DeadlineSocket {
+    /// Read bytes under the remaining request and idle timeout.
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         self.socket
             .set_read_timeout(Some(self.remaining()?.min(self.idle_timeout)))?;
@@ -181,16 +193,19 @@ impl Read for DeadlineSocket {
     }
 }
 impl Write for DeadlineSocket {
+    /// Write bytes under the remaining request and idle timeout.
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         self.socket
             .set_write_timeout(Some(self.remaining()?.min(self.idle_timeout)))?;
         self.socket.write(buf)
     }
+    /// Flush the wrapped transport.
     fn flush(&mut self) -> std::io::Result<()> {
         self.socket.flush()
     }
 }
 const MAX_FRAME: usize = 1024 * 1024;
+/// Read bounded length-prefixed JSON; reject oversized/truncated/malformed frames.
 pub fn read_frame<T: serde::de::DeserializeOwned>(stream: &mut impl Read) -> AppResult<T> {
     let mut size = [0; 4];
     stream.read_exact(&mut size)?;
@@ -202,6 +217,7 @@ pub fn read_frame<T: serde::de::DeserializeOwned>(stream: &mut impl Read) -> App
     stream.read_exact(&mut bytes)?;
     Ok(serde_json::from_slice(&bytes)?)
 }
+/// Encode bounded length-prefixed JSON and flush it.
 pub fn write_frame<T: Serialize>(stream: &mut impl Write, value: &T) -> AppResult<()> {
     let bytes = serde_json::to_vec(value)?;
     if bytes.len() > MAX_FRAME {
@@ -212,6 +228,7 @@ pub fn write_frame<T: Serialize>(stream: &mut impl Write, value: &T) -> AppResul
     stream.flush()?;
     Ok(())
 }
+/// Send a request to a localhost TLS endpoint and read its complete response.
 pub fn exchange(
     address: SocketAddr,
     config: Arc<rustls::ClientConfig>,
@@ -219,6 +236,7 @@ pub fn exchange(
 ) -> AppResult<Response> {
     exchange_named(address, config, request, "localhost")
 }
+/// Verify the server name and exchange one request within its remaining deadline.
 pub(super) fn exchange_named(
     address: SocketAddr,
     config: Arc<rustls::ClientConfig>,
@@ -228,9 +246,22 @@ pub(super) fn exchange_named(
     let context = |stage: &str, error: Box<dyn std::error::Error>| -> Box<dyn std::error::Error> {
         format!("TLS endpoint {address}, {stage}: {error}").into()
     };
+    let budget = if request.deadline_ms == 0 {
+        10_000
+    } else {
+        request
+            .deadline_ms
+            .saturating_sub(crate::security::now_ms())
+            .min(10_000)
+    };
+    if budget == 0 {
+        return Err("Request timed out before connection.".into());
+    }
+    let deadline = Instant::now() + Duration::from_millis(budget);
     let connection = rustls::ClientConnection::new(config, ServerName::try_from(name.to_owned())?)?;
     let socket = socket(address).map_err(|e| context("TCP connection", e))?;
     let mut stream = rustls::StreamOwned::new(connection, DeadlineSocket::new(socket));
+    stream.sock.limit(deadline);
     write_frame(&mut stream, request).map_err(|e| context("handshake/request send", e))?;
     // This protocol sends one request per connection. Close only our TLS write
     // side; TLS 1.3 still allows the peer to send its response afterward.

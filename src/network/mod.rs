@@ -36,6 +36,7 @@ use std::{
 };
 use uuid::Uuid;
 
+/// Map a role to its dedicated gateway address/certificate index.
 fn role_index(role: Role) -> usize {
     match role {
         Role::Admin => 0,

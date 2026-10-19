@@ -306,3 +306,21 @@ fn staff_signup_creates_both_roles_without_granting_a_login_session() {
     assert!(app.form.is_some());
     assert_eq!(server.count("user_credentials"), 2);
 }
+
+#[test]
+fn invalid_signup_stays_in_form_without_database_write() {
+    let f = Fixture::new();
+    let root = f.root.clone();
+    let mut conn = Connection::open_in_memory().unwrap();
+    database::initialize(&mut conn).unwrap();
+    let mut app = App::new(conn, Auth::for_test(root), true);
+    app.selected = 3;
+    app.handle_key(key(KeyCode::Enter));
+    fill(
+        &mut app,
+        &["not-email", "password1234", "Name", "++12345678", "admin"],
+    );
+    assert!(app.form.is_some());
+    assert_eq!(app.network.as_ref().unwrap().count("users"), 0);
+    assert!(!render(&mut app, 100, 30).contains("password1234"));
+}

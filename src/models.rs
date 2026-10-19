@@ -7,6 +7,7 @@ pub enum Role {
     Voter,
 }
 impl Role {
+    /// Return the stable database role name.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Admin => "admin",
@@ -14,6 +15,7 @@ impl Role {
             Self::Voter => "voter",
         }
     }
+    /// Return the role label shown in the TUI.
     pub fn label(self) -> &'static str {
         match self {
             Self::Admin => "Administrator",

@@ -1,6 +1,7 @@
 //! Form input and confirmed mutations. State changes follow successful server writes.
 use super::*;
 impl App {
+    /// Handle input/navigation/submission; preserve invalid forms and clear secret fields.
     pub(super) fn handle_form(&mut self, key: KeyEvent) -> AppResult<()> {
         let mut form = self.form.take().unwrap();
         match key.code {
@@ -69,8 +70,42 @@ impl App {
         self.form = Some(form);
         Ok(())
     }
+    /// Validate client fields and call the appropriate typed backend operation.
     pub(super) fn submit_form(&mut self, form: &Form) -> AppResult<()> {
         let v: Vec<&str> = form.fields.iter().map(|f| f.value.as_str()).collect();
+        // Validate before sending; server validation remains mandatory.
+        use crate::validation as check;
+        match form.purpose {
+            FormPurpose::Login(Role::Voter) => check::digits(v[0], 20, "PIN")?,
+            FormPurpose::Login(_) => {
+                check::email(v[0], false)?;
+                check::password(v[1], false)?;
+            }
+            FormPurpose::Otp => check::digits(v[0], 6, "OTP")?,
+            FormPurpose::Setup => {
+                check::email(v[0], false)?;
+                check::password(v[1], true)?;
+                check::text(v[2], "Name")?;
+                check::phone(v[3])?;
+                if !matches!(v[4], "admin" | "district_official") {
+                    return Err("Invalid staff role.".into());
+                }
+            }
+            FormPurpose::RegisterVoter | FormPurpose::UpdateVoter(_) => {
+                check::voter(&VoterInput {
+                    full_name: v[0].into(),
+                    dob: v[1].into(),
+                    nid: v[2].into(),
+                    phone: v[3].into(),
+                    email: v[4].into(),
+                })?;
+            }
+            _ => {
+                for value in &v {
+                    check::text(value, "Field")?;
+                }
+            }
+        }
         match form.purpose {
             FormPurpose::Login(role) => {
                 self.pending = Some(if role == Role::Voter {
@@ -185,6 +220,7 @@ impl App {
         }
         Ok(())
     }
+    /// Execute a confirmed operation and refresh the affected UI state.
     pub(super) fn handle_confirmation(&mut self, key: KeyEvent) -> AppResult<()> {
         if matches!(key.code, KeyCode::Esc | KeyCode::Char('n' | 'N')) {
             self.confirmation = None;

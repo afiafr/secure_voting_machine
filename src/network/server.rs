@@ -13,6 +13,7 @@ pub struct Network {
     pub(super) db_address: SocketAddr,
 }
 impl Network {
+    /// Bind the database and role gateways, establish certificate binding and own worker lifetimes.
     pub fn start(
         conn: Connection,
         auth: auth::login::Auth,
@@ -46,6 +47,7 @@ impl Network {
             tls::client_config(&certs.ca, Some(&certs.gateways[2]))?,
         ];
         let public_client = tls::client_config(&certs.ca, None)?;
+        let timeouts = Arc::new(AtomicUsize::new(0));
         let rejected = Arc::new(AtomicUsize::new(0));
         let certificates = certs
             .gateways
@@ -62,7 +64,36 @@ impl Network {
                 let mut state = db_state
                     .lock()
                     .map_err(|_| "Database service unavailable.")?;
-                let result = state.dispatch(request, ROLES[index]);
+                let actor = request
+                    .token
+                    .as_ref()
+                    .and_then(|t| state.sessions.get(t))
+                    .map(|r| r.session.user_id());
+                crate::security::set_deadline(request.deadline_ms);
+                state
+                    .conn
+                    .progress_handler(1, Some(crate::security::expired))?;
+                let result = crate::security::check_deadline()
+                    .and_then(|_| state.dispatch(request, ROLES[index]));
+                state.conn.progress_handler(0, None::<fn() -> bool>)?;
+                let expired = crate::security::expired();
+                crate::security::clear_deadline();
+                if !state.conn.is_autocommit() {
+                    state.conn.execute_batch("ROLLBACK")?;
+                }
+                if result.is_err() {
+                    crate::security::event(
+                        &state.conn,
+                        actor,
+                        if expired {
+                            "request_timeout"
+                        } else {
+                            "request_rejected"
+                        },
+                        None,
+                        0,
+                    )?;
+                }
                 // Delivery failures leave an outbox entry for the next request.
                 let _ = state.auth.flush_notifications(&state.conn);
                 result
@@ -74,6 +105,7 @@ impl Network {
             db_config,
             stop.clone(),
             rejected.clone(),
+            timeouts.clone(),
             db_handler,
         )?];
         let mut addresses = Vec::new();
@@ -86,6 +118,7 @@ impl Network {
                 public_config.clone(),
                 stop.clone(),
                 rejected.clone(),
+                timeouts.clone(),
                 move |request, _| {
                     if request.role != role {
                         return response(Err("Wrong role gateway.".into()));
@@ -105,7 +138,12 @@ impl Network {
             config: public_client,
             setup_token,
         };
-        workers.push(super::monitor::start(state.clone(), stop.clone(), rejected));
+        workers.push(super::monitor::start(
+            state.clone(),
+            stop.clone(),
+            rejected,
+            timeouts,
+        ));
         Ok(Self {
             stop,
             workers,
@@ -150,6 +188,7 @@ impl Drop for Network {
         }
     }
 }
+/// Convert service success/failure into the wire response envelope.
 fn response(result: AppResult<Value>) -> Response {
     match result {
         Ok(value) => Response { value, error: None },
@@ -159,11 +198,13 @@ fn response(result: AppResult<Value>) -> Response {
         },
     }
 }
-fn listen(
+/// Accept bounded connections and run TLS workers with a ten-second socket watchdog.
+pub(super) fn listen(
     listener: TcpListener,
     config: Arc<rustls::ServerConfig>,
     stop: Arc<AtomicBool>,
     rejected: Arc<AtomicUsize>,
+    timeouts: Arc<AtomicUsize>,
     handler: impl Fn(Request, Option<Vec<u8>>) -> Response + Send + Sync + 'static,
 ) -> AppResult<thread::JoinHandle<()>> {
     listener.set_nonblocking(true)?;
@@ -171,9 +212,21 @@ fn listen(
     Ok(thread::spawn(move || {
         let active = Arc::new(AtomicUsize::new(0));
         let mut children = Vec::new();
+        let mut window = Instant::now();
+        let mut accepted = 0usize;
         while !stop.load(Ordering::Relaxed) {
             match listener.accept() {
                 Ok((socket, _)) => {
+                    if window.elapsed() >= Duration::from_secs(1) {
+                        window = Instant::now();
+                        accepted = 0;
+                    }
+                    if accepted >= 64 {
+                        rejected.fetch_add(1, Ordering::Relaxed);
+                        drop(socket);
+                        continue;
+                    }
+                    accepted += 1;
                     if active.load(Ordering::Relaxed) >= 32 {
                         rejected.fetch_add(1, Ordering::Relaxed);
                         drop(socket);
@@ -183,14 +236,38 @@ fn listen(
                     let (config, handler, active) =
                         (config.clone(), handler.clone(), active.clone());
                     let rejected = rejected.clone();
+                    let timeouts = timeouts.clone();
                     children.push(thread::spawn(move || {
+                        let started = Instant::now();
+                        // Close even if a worker is blocked on CPU/DB work. Dropping the
+                        // sender wakes the watchdog immediately on normal completion.
+                        let guard_socket = socket.try_clone().ok();
+                        let (done, completion) = std::sync::mpsc::channel::<()>();
+                        let timer = thread::spawn(move || {
+                            if matches!(
+                                completion.recv_timeout(Duration::from_secs(10)),
+                                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+                            ) {
+                                if let Some(s) = guard_socket {
+                                    let _ = s.shutdown(std::net::Shutdown::Both);
+                                }
+                                timeouts.fetch_add(1, Ordering::Relaxed);
+                            }
+                        });
                         let result: AppResult<()> = (|| {
                             tls::configure(&socket)?;
                             let mut stream = rustls::StreamOwned::new(
                                 rustls::ServerConnection::new(config)?,
                                 tls::DeadlineSocket::new(socket),
                             );
-                            let request: Request = tls::read_frame(&mut stream)?;
+                            let mut request: Request = tls::read_frame(&mut stream)?;
+                            let limit = crate::security::now_ms()
+                                + 10_000u64.saturating_sub(started.elapsed().as_millis() as u64);
+                            request.deadline_ms = if request.deadline_ms == 0 {
+                                limit
+                            } else {
+                                request.deadline_ms.min(limit)
+                            };
                             // The request is complete. Allow bounded time for bcrypt and
                             // database work without relaxing slow-client request limits.
                             stream.sock.begin_response();
@@ -206,6 +283,8 @@ fn listen(
                             stream.flush()?;
                             Ok(())
                         })();
+                        drop(done);
+                        let _ = timer.join();
                         // Log counts, never untrusted request bodies or credentials.
                         if result.is_err() {
                             rejected.fetch_add(1, Ordering::Relaxed);

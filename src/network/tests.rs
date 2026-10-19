@@ -45,7 +45,7 @@ impl Fixture {
         Self { network, root }
     }
     fn message(&self, phone: &str, prefix: &str) -> String {
-        fs::read_to_string(auth::login::mailbox_path(&self.root, phone))
+        fs::read_to_string(auth::login::mailbox_path(&self.root, phone).unwrap())
             .unwrap()
             .lines()
             .filter_map(|s| s.strip_prefix(prefix))
@@ -137,6 +137,7 @@ fn tls_rejects_untrusted_ca_wrong_hostname_plaintext_and_missing_client_certific
     let f = Fixture::new();
     let api = &f.network.client;
     let request = Request {
+        deadline_ms: crate::security::now_ms() + 10_000,
         role: Role::Admin,
         token: None,
         operation: "election.list".into(),
@@ -197,6 +198,7 @@ fn session_and_challenge_cannot_be_forged_replayed_or_used_on_another_gateway() 
         )
         .is_err());
     let request = Request {
+        deadline_ms: crate::security::now_ms() + 10_000,
         role: Role::Voter,
         token: Some(admin.token.clone()),
         operation: "election.list".into(),
@@ -294,6 +296,7 @@ fn internal_certificate_role_binding_and_transport_incident_log() {
     )
     .unwrap();
     let request = Request {
+        deadline_ms: crate::security::now_ms() + 10_000,
         role: Role::DistrictOfficial,
         token: None,
         operation: "election.list".into(),
@@ -350,6 +353,7 @@ fn signup_responses_close_tls_cleanly_on_both_hops() {
             Role::DistrictOfficial
         };
         let request = Request {
+            deadline_ms: crate::security::now_ms() + 10_000,
             role: Role::Admin,
             token: net.client.setup_token.clone(),
             operation: "provision".into(),
@@ -390,7 +394,7 @@ fn incomplete_frames_are_rejected_even_when_the_peer_closes() {
 }
 
 #[test]
-fn client_closes_its_write_side_and_waits_for_a_slow_response() {
+fn client_rejects_response_after_ten_second_deadline() {
     // Reproduce slow debug-build password hashing without burning CPU in bcrypt.
     // Eleven seconds exceeds both the old idle (5s) and whole-request (10s) limits.
     let certs = tls::Certificates::generate().unwrap();
@@ -415,18 +419,16 @@ fn client_closes_its_write_side_and_waits_for_a_slow_response() {
             0
         );
         thread::sleep(Duration::from_secs(11));
-        tls::write_frame(
+        let _ = tls::write_frame(
             &mut stream,
             &Response {
-                value: json!("complete"),
+                value: json!("late"),
                 error: None,
             },
-        )
-        .unwrap();
-        stream.conn.send_close_notify();
-        stream.flush().unwrap();
+        );
     });
     let request = Request {
+        deadline_ms: crate::security::now_ms() + 10_000,
         role: Role::Admin,
         token: None,
         operation: "test".into(),
@@ -434,7 +436,7 @@ fn client_closes_its_write_side_and_waits_for_a_slow_response() {
     };
     let result = tls::exchange(address, client_config, &request);
     server.join().unwrap();
-    assert_eq!(result.unwrap().value, json!("complete"));
+    assert!(result.is_err());
 }
 
 #[test]
@@ -454,4 +456,127 @@ fn configured_worker_waits_for_data_on_an_inherited_nonblocking_socket() {
     writer.join().unwrap();
     result.expect("configured TLS worker must wait instead of returning WouldBlock");
     assert_eq!(byte, *b"x");
+}
+
+#[test]
+fn direct_endpoints_reject_bad_fields_and_cross_role_reads() {
+    let f = Fixture::new();
+    let admin = f.login(Role::Admin);
+    let official = f.login(Role::DistrictOfficial);
+    let client = &f.network.client;
+    let e = client::election::create(&mut client.clone(), &admin, "Privacy test").unwrap();
+    let request = |session: &Session, op: &str, args: Value| -> AppResult<Value> {
+        client.request(session.role, Some(session.token.clone()), op, args)
+    };
+    assert!(request(&official, "voters.list", json!([e])).is_err());
+    assert!(request(&official, "election.audit_log", json!([e])).is_err());
+    assert!(request(&admin, "election.results", json!([e])).is_err());
+    assert!(request(&admin, "ballots.list", json!([e])).is_err());
+    assert!(request(&admin, "election.rename", json!([e, ""])).is_err());
+    assert!(request(&admin, "election.rename", json!([e, "x".repeat(201)])).is_err());
+    assert!(request(&admin, "election.rename", json!({"bad":"shape"})).is_err());
+    assert!(request(
+        &admin,
+        "voters.register",
+        json!([e,{"full_name":"V","dob":"2001-02-29","nid":"N","phone":"1234567","email":""}])
+    )
+    .is_err());
+    request(
+        &admin,
+        "error",
+        json!(["secret-in-screen", "secret-in-body\nforged audit event"]),
+    )
+    .unwrap();
+    let state = f.network.state.lock().unwrap();
+    let saved: String = state
+        .conn
+        .query_row(
+            "SELECT screen||message FROM error_reports ORDER BY error_id DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(!saved.contains("secret"));
+    assert!(!saved.contains("forged"));
+    drop(state);
+    assert_eq!(f.network.count("election_voters"), 0);
+    assert_eq!(f.network.count("elections"), 1);
+}
+
+#[test]
+fn expired_wire_request_cannot_create_election() {
+    let f = Fixture::new();
+    let admin = f.login(Role::Admin);
+    let mut stream = rustls::StreamOwned::new(
+        rustls::ClientConnection::new(
+            f.network.client.config.clone(),
+            rustls::pki_types::ServerName::try_from("localhost").unwrap(),
+        )
+        .unwrap(),
+        tls::socket(f.network.client.addresses[0]).unwrap(),
+    );
+    let request = Request {
+        deadline_ms: crate::security::now_ms().saturating_sub(1),
+        role: Role::Admin,
+        token: Some(admin.token),
+        operation: "election.create".into(),
+        args: json!(["Expired"]),
+    };
+    tls::write_frame(&mut stream, &request).unwrap();
+    let response: Response = tls::read_frame(&mut stream).unwrap();
+    assert!(response.error.is_some());
+    assert_eq!(f.network.count("elections"), 0);
+}
+
+#[test]
+fn server_watchdog_closes_stalled_handler_and_counts_timeout() {
+    let certs = tls::Certificates::generate().unwrap();
+    let config = tls::client_config(&certs.ca, None).unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let stop = Arc::new(AtomicBool::new(false));
+    let timeouts = Arc::new(AtomicUsize::new(0));
+    let worker = server::listen(
+        listener,
+        certs.server_config(false).unwrap(),
+        stop.clone(),
+        Arc::new(AtomicUsize::new(0)),
+        timeouts.clone(),
+        |_, _| {
+            thread::sleep(Duration::from_secs(11));
+            Response {
+                value: Value::Null,
+                error: None,
+            }
+        },
+    )
+    .unwrap();
+    let mut socket = tls::socket(address).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(12)))
+        .unwrap();
+    let connection = rustls::ClientConnection::new(
+        config,
+        rustls::pki_types::ServerName::try_from("localhost").unwrap(),
+    )
+    .unwrap();
+    let mut stream = rustls::StreamOwned::new(connection, &mut socket);
+    let start = Instant::now();
+    tls::write_frame(
+        &mut stream,
+        &Request {
+            deadline_ms: crate::security::now_ms() + 10_000,
+            role: Role::Admin,
+            token: None,
+            operation: "test".into(),
+            args: Value::Null,
+        },
+    )
+    .unwrap();
+    let result: AppResult<Response> = tls::read_frame(&mut stream);
+    assert!(result.is_err());
+    assert!(start.elapsed() < Duration::from_secs(11));
+    stop.store(true, Ordering::Relaxed);
+    worker.join().unwrap();
+    assert_eq!(timeouts.load(Ordering::Relaxed), 1);
 }

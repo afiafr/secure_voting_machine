@@ -1,6 +1,7 @@
 //! Keyboard actions for the role menus and election screens.
 use super::*;
 impl App {
+    /// Route a key to the active form/screen and display operation errors.
     pub(super) fn handle_key(&mut self, key: KeyEvent) {
         if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
             return;
@@ -31,6 +32,7 @@ impl App {
             });
         }
     }
+    /// Route screen-level selection, login and navigation actions.
     pub(super) fn handle_screen(&mut self, key: KeyEvent) -> AppResult<()> {
         match self.screen {
             Screen::Main => match key.code {
@@ -137,6 +139,7 @@ impl App {
         }
         Ok(())
     }
+    /// Handle election-editor navigation and position/candidate actions.
     pub(super) fn handle_admin(&mut self, key: KeyEvent) -> AppResult<()> {
         match key.code {
             KeyCode::Esc => {
@@ -247,6 +250,7 @@ impl App {
         }
         Ok(())
     }
+    /// Open a voter registration or edit form with the appropriate field values.
     pub(super) fn voter_form(&mut self, voter: Option<Voter>) {
         let (purpose, title, input) = match voter {
             Some(v) => (
@@ -284,6 +288,7 @@ impl App {
             ],
         );
     }
+    /// Handle registration, enrollment, editing and removal selection.
     pub(super) fn handle_voters(&mut self, key: KeyEvent) -> AppResult<()> {
         match key.code {
             KeyCode::Esc => {
@@ -317,6 +322,7 @@ impl App {
         }
         Ok(())
     }
+    /// Handle election lifecycle commands available to district officials.
     pub(super) fn handle_district(&mut self, key: KeyEvent) -> AppResult<()> {
         match key.code {
             KeyCode::Esc => self.load_elections(SelectionPurpose::District)?,
@@ -339,6 +345,7 @@ impl App {
         }
         Ok(())
     }
+    /// Fetch and display anonymous candidate and party totals.
     pub(super) fn show_results(&mut self) -> AppResult<()> {
         let rows = election::results(&self.conn, self.session()?, self.election_id()?)?;
         if rows.is_empty() {
@@ -379,6 +386,7 @@ impl App {
         self.screen = Screen::Results;
         Ok(())
     }
+    /// Update local ballot selections and request final submission confirmation.
     pub(super) fn handle_vote(&mut self, key: KeyEvent) -> AppResult<()> {
         match key.code {
             KeyCode::Esc => {
