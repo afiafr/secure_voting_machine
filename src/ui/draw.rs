@@ -2,6 +2,29 @@
 use super::*;
 
 /// Render a titled selectable list.
+// fn draw_list(
+//     frame: &mut Frame,
+//     area: Rect,
+//     title: &str,
+//     items: Vec<String>,
+//     selected: usize,
+//     help: &str,
+// ) {
+//     let sections = Layout::vertical([Constraint::Min(0), Constraint::Length(2)]).split(area);
+//     let mut state = ListState::default();
+//     if !items.is_empty() {
+//         state.select(Some(selected.min(items.len() - 1)));
+//     }
+//     frame.render_stateful_widget(
+//         List::new(items)
+//             .block(Block::bordered().title(title))
+//             .highlight_style(HIGHLIGHT)
+//             .highlight_symbol("> "),
+//         sections[0],
+//         &mut state,
+//     );
+//     frame.render_widget(Paragraph::new(help).wrap(Wrap { trim: true }), sections[1]);
+// }
 fn draw_list(
     frame: &mut Frame,
     area: Rect,
@@ -11,20 +34,48 @@ fn draw_list(
     help: &str,
 ) {
     let sections = Layout::vertical([Constraint::Min(0), Constraint::Length(2)]).split(area);
+
     let mut state = ListState::default();
     if !items.is_empty() {
         state.select(Some(selected.min(items.len() - 1)));
     }
+
+    // Draw the outer frame independently of the list.
+    let block = Block::bordered().title(title);
+    let inner = block.inner(sections[0]);
+    frame.render_widget(block, sections[0]);
+
+    // Size the list to the longest choice, plus the selection marker.
+    let list_width = items
+        .iter()
+        .map(|item| item.chars().count())
+        .max()
+        .unwrap_or(0)
+        .saturating_add(2)
+        .min(inner.width as usize) as u16;
+
+    // Limit the height so long lists can still scroll.
+    let list_height = items.len().min(inner.height as usize) as u16;
+
+    // Center the list horizontally and vertically.
+    let list_area = Rect {
+        x: inner.x + (inner.width - list_width) / 2,
+        y: inner.y + (inner.height - list_height) / 2,
+        width: list_width,
+        height: list_height,
+    };
+
     frame.render_stateful_widget(
         List::new(items)
-            .block(Block::bordered().title(title))
             .highlight_style(HIGHLIGHT)
-            .highlight_symbol("> "),
-        sections[0],
+            .highlight_symbol(" "),
+        list_area,
         &mut state,
     );
+
     frame.render_widget(Paragraph::new(help).wrap(Wrap { trim: true }), sections[1]);
 }
+
 /// Render the current screen, notices, forms and confirmations.
 pub(super) fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
