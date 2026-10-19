@@ -1,0 +1,2 @@
+Updated v0.2.2 binary compiled successfully using rustc and retained compiled dependencies.
+Fresh cargo --locked resolution blocked by existing num-traits 0.2.29 lock entry.

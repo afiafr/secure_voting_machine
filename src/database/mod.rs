@@ -2,12 +2,34 @@
 use rusqlite::{Connection, Result};
 use std::path::Path;
 
+/// Open the SQLite file with private POSIX permissions and initialize its schema.
 pub fn open(path: impl AsRef<Path>) -> Result<Connection> {
+    let path = path.as_ref();
+    // Create with restrictive permissions before SQLite writes any data.
+    if !path.exists() {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        options
+            .open(path)
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+    }
     let mut conn = Connection::open(path)?;
     initialize(&mut conn)?;
     Ok(conn)
 }
 
+/// Create tables/triggers transactionally and preserve compatible existing accounts.
 pub fn initialize(conn: &mut Connection) -> Result<()> {
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
     conn.execute_batch("PRAGMA foreign_keys=ON;")?;

@@ -1,38 +1,13 @@
 //! Registration is one operation: identity, PIN credential, enrollment and audit.
-use super::{audit, require_role, text, AppResult};
+use super::{audit, finish_change, require_role, text, AppResult};
+use crate::validation;
 use crate::{
     auth::login::{Auth, Session},
     models::{Role, Voter, VoterInput},
 };
-use chrono::{NaiveDate, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 
-fn validate(input: &VoterInput) -> AppResult<VoterInput> {
-    let dob = NaiveDate::parse_from_str(input.dob.trim(), "%Y-%m-%d")
-        .map_err(|_| "DOB must be a real date in YYYY-MM-DD format.")?;
-    if dob > Utc::now().date_naive() || dob < NaiveDate::from_ymd_opt(1900, 1, 1).unwrap() {
-        return Err("DOB must be between 1900-01-01 and today.".into());
-    }
-    let email = input.email.trim().to_lowercase();
-    if !email.is_empty()
-        && (!email.contains('@') || email.len() > 200 || email.chars().any(char::is_whitespace))
-    {
-        return Err("Enter a valid email or leave it blank.".into());
-    }
-    let phone = text(&input.phone, "Phone")?;
-    if !phone.chars().all(|c| c.is_ascii_digit() || c == '+')
-        || phone.chars().filter(char::is_ascii_digit).count() < 7
-    {
-        return Err("Phone must have at least seven digits, with optional country prefix.".into());
-    }
-    Ok(VoterInput {
-        full_name: text(&input.full_name, "Full name")?,
-        email,
-        phone,
-        dob: dob.to_string(),
-        nid: text(&input.nid, "NID/passport ID")?.to_uppercase(),
-    })
-}
+/// Require the owning administrator and an enrollable election state.
 fn enrollment_allowed(conn: &Connection, session: &Session, election: i64) -> AppResult<()> {
     require_role(conn, session, Role::Admin)?;
     let yes:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM elections WHERE election_id=?1 AND created_by=?2 AND status IN ('draft','open'))",params![election,session.user_id()],|r|r.get(0))?;
@@ -41,6 +16,7 @@ fn enrollment_allowed(conn: &Connection, session: &Session, election: i64) -> Ap
     }
     Ok(())
 }
+/// Register identity, PIN verifier, enrollment and audit transactionally; deliver the PIN privately.
 pub fn register(
     conn: &mut Connection,
     auth: &Auth,
@@ -48,7 +24,7 @@ pub fn register(
     election: i64,
     input: &VoterInput,
 ) -> AppResult<i64> {
-    let input = validate(input)?;
+    let input = validation::voter(input)?;
     let tx = conn.transaction()?;
     enrollment_allowed(&tx, session, election)?;
     let duplicate: bool = tx.query_row(
@@ -83,9 +59,11 @@ pub fn register(
         &input.phone,
         &format!("Voting PIN: {pin}\nKeep this credential private.\n"),
     )?;
+    crate::security::check_deadline()?;
     tx.commit()?;
     Ok(id)
 }
+/// Return records visible to the authenticated role and ownership scope.
 pub fn list(conn: &Connection, session: &Session, election: i64) -> AppResult<Vec<Voter>> {
     require_role(conn, session, Role::Admin)?;
     let owner: bool = conn.query_row(
@@ -110,6 +88,7 @@ pub fn list(conn: &Connection, session: &Session, election: i64) -> AppResult<Ve
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
+/// Enroll an existing voter by NID without regenerating their PIN.
 pub fn enroll(conn: &mut Connection, session: &Session, election: i64, nid: &str) -> AppResult<()> {
     let tx = conn.transaction()?;
     enrollment_allowed(&tx, session, election)?;
@@ -119,16 +98,7 @@ pub fn enroll(conn: &mut Connection, session: &Session, election: i64, nid: &str
         "INSERT INTO election_voters(election_id,user_id) VALUES (?1,?2)",
         params![election, id],
     )?;
-    audit(
-        &tx,
-        Some(election),
-        Some(session.user_id()),
-        Some(id),
-        "voter_enrolled",
-        0,
-    )?;
-    tx.commit()?;
-    Ok(())
+    finish_change(tx, session, election, Some(id), "voter_enrolled")
 }
 /// Removes eligibility, not historical identity or credentials.
 pub fn remove(
@@ -154,17 +124,9 @@ pub fn remove(
     {
         return Err("Voter not enrolled or already voted.".into());
     }
-    audit(
-        &tx,
-        Some(election),
-        Some(session.user_id()),
-        Some(voter),
-        "voter_unenrolled",
-        0,
-    )?;
-    tx.commit()?;
-    Ok(())
+    finish_change(tx, session, election, Some(voter), "voter_unenrolled")
 }
+/// Update allowed voter profile fields; forbid ordinary OTP-phone/NID reassignment.
 pub fn update(
     conn: &mut Connection,
     session: &Session,
@@ -172,7 +134,7 @@ pub fn update(
     voter: i64,
     input: &VoterInput,
 ) -> AppResult<()> {
-    let input = validate(input)?;
+    let input = validation::voter(input)?;
     let tx = conn.transaction()?;
     enrollment_allowed(&tx, session, election)?;
     let allowed:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM election_voters v JOIN elections e USING(election_id) WHERE v.election_id=?1 AND v.user_id=?2 AND v.has_voted=0 AND e.status='draft')",params![election,voter],|r|r.get(0))?;
@@ -192,16 +154,7 @@ pub fn update(
         "UPDATE users SET email=NULLIF(?1,''),full_name=?2,dob=?3 WHERE id=?4 AND role='voter'",
         params![input.email, input.full_name, input.dob, voter],
     )?;
-    audit(
-        &tx,
-        Some(election),
-        Some(session.user_id()),
-        Some(voter),
-        "voter_updated",
-        0,
-    )?;
-    tx.commit()?;
-    Ok(())
+    finish_change(tx, session, election, Some(voter), "voter_updated")
 }
 /// Called only from the explicit engineer setup mode, never an ordinary role menu.
 pub fn provision(
@@ -216,12 +169,9 @@ pub fn provision(
     if role == Role::Voter {
         return Err("Register voters through the administrator's R action.".into());
     }
-    let email = text(email, "Email")?.to_lowercase();
-    let phone = text(phone, "Phone")?;
+    let email = validation::email(email, false)?;
+    let phone = validation::phone(phone)?;
     let name = text(name, "Full name")?;
-    if !email.contains('@') {
-        return Err("Email must contain @.".into());
-    }
     let hashed = auth.password_hash(password)?;
     let tx = conn.transaction()?;
     tx.execute(
@@ -234,6 +184,7 @@ pub fn provision(
         params![id, hashed],
     )?;
     audit(&tx, None, None, Some(id), "engineer_provisioned_account", 0)?;
+    crate::security::check_deadline()?;
     tx.commit()?;
     Ok(())
 }

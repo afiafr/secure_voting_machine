@@ -34,9 +34,13 @@ for stronger deployment separation. The implementation binds loopback only.
 
 Frames are limited to 1 MiB. Listeners allow at most 32 concurrent connections each;
 TCP connect timeouts are three seconds. Handshake/request-reading idle timeouts are
-five seconds, with a ten-second total request budget. Once a complete request has
-arrived, server processing/response I/O gets a separate 60-second budget; clients
-allow up to 60 seconds for a response. This accommodates slower debug-build bcrypt.
+five seconds, with a ten-second total request budget. The deadline is not reset for responses. Gateways clamp the forwarded deadline to
+their remaining budget; the database checks it after acquiring its state lock.
+A watchdog closes an accepted connection after ten seconds even when its worker is
+still computing. SQLite progress callbacks interrupt long queries, and mutating
+services check the deadline before commit. Each listener admits at most 64 connections
+per second and at most 32 active workers. These are global per-service limits, not
+proof of attacker identity or a source-IP firewall.
 Both sides send TLS close_notify before closing their write side. Rejected TLS/protocol attempts are aggregated into
 severity-3 events; more than ten accumulated rejections produce a severity-2 flood
 event. This is an alert, not proof that an attack occurred, and not a per-IP ban.
@@ -44,8 +48,9 @@ The limits bound network work but cannot prevent every resource-exhaustion attac
 
 A timed-out mutation may already have committed on the server. The client does not
 automatically retry mutations; refresh before retrying. Ballot duplicate protection
-makes a repeated cast fail safely. Database operations and bcrypt are not preempted
-by a network timeout.
+makes a repeated cast fail safely. Long SQLite statements are interrupted cooperatively; bcrypt itself is not preempted.
+A deadline check prevents subsequent successful credential issuance or a late commit;
+a commit that finished before timeout remains committed.
 
 ## Ballot privacy and audit
 

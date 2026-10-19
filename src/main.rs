@@ -3,21 +3,24 @@ mod auth;
 mod database;
 mod models;
 mod network;
+mod security;
 mod services;
 #[cfg(test)]
 mod test_support;
 mod ui;
+mod validation;
 use network::{ApiClient, Network};
 use services::AppResult;
 use std::path::PathBuf;
 use ui::{run, App};
 
+/// Parse command modes, load configuration and start the TUI or TLS services.
 fn main() -> AppResult<()> {
     dotenvy::dotenv().ok();
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|s| s == "--version") {
         println!(
-            "secure_voting_machine {} (blocking TLS worker socket fix)",
+            "secure_voting_machine {} (security course edition)",
             env!("CARGO_PKG_VERSION")
         );
         return Ok(());
@@ -28,7 +31,7 @@ fn main() -> AppResult<()> {
         let phone = args.get(i + 1).ok_or("Usage: --inbox PHONE")?;
         println!(
             "LOCAL SIMULATION: anyone with OS access to this inbox can read its messages.\n{}",
-            std::fs::read_to_string(auth::login::mailbox_path(&mailbox, phone))?
+            std::fs::read_to_string(auth::login::mailbox_path(&mailbox, phone)?)?
         );
         return Ok(());
     }
@@ -63,6 +66,16 @@ fn main() -> AppResult<()> {
         let auth = auth::login::Auth::from_env(mailbox)?;
         let path = std::env::var("VOTING_DB").unwrap_or_else(|_| "voting.db".into());
         let conn = database::open(path)?;
+        if let Ok(email) = std::env::var("VOTING_SYSTEM_EMAIL") {
+            let email = validation::email(&email, false)?;
+            conn.execute(
+                "UPDATE system_settings SET value=?1 WHERE key='system_email'",
+                [email],
+            )?;
+        }
+        if setup {
+            auth.approve_setup(&conn)?;
+        }
         let certs = if serve {
             network::tls::Certificates::load(&tls_path)?
         } else {

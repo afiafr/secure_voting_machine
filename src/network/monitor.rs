@@ -1,14 +1,29 @@
 //! Aggregate rejected transports so floods cannot create one database write per packet.
 use super::*;
+/// Start bounded transport monitoring and aggregate security incidents.
 pub(super) fn start(
     state: Arc<Mutex<State>>,
     stop: Arc<AtomicBool>,
     rejected: Arc<AtomicUsize>,
+    timeouts: Arc<AtomicUsize>,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         let mut failures = 0;
         while !stop.load(Ordering::Relaxed) {
             thread::sleep(Duration::from_millis(100));
+            let expired = timeouts.swap(0, Ordering::Relaxed);
+            if expired > 0 {
+                if let Ok(state) = state.lock() {
+                    let _ = crate::security::event(
+                        &state.conn,
+                        None,
+                        "request_timeout",
+                        None,
+                        expired as i64,
+                    );
+                    let _ = state.auth.flush_notifications(&state.conn);
+                }
+            }
             let count = rejected.swap(0, Ordering::Relaxed);
             if count == 0 {
                 continue;

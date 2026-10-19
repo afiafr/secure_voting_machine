@@ -1,0 +1,6 @@
+PASS: empty signup rejected; engineer OTP and staff signup through real TUI/TLS
+PASS: admin login, defaults, position/candidate CRUD, reopen, registration/PIN, duplicate rejection, audit
+PASS: voter cannot vote before election opens
+PASS: open election, incomplete ballot rejected, one choice per position, repeat vote unavailable
+PASS: close/tally/winners, timestamped actor logs, admin participation privacy, DO anonymity, DB integrity
+All direct terminal smoke checks passed; temporary data removed.

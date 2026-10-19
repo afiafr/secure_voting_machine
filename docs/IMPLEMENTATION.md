@@ -127,3 +127,7 @@ or explicitly migrate those voters through a separately reviewed procedure befor
 using their accounts. Arbitrary other legacy election schemas are not automatically
 converted; use a fresh database or supply a schema-specific migration. Back up an
 existing database before opting into a migration.
+
+
+For the v0.2.0 deadline, notification and validation changes, see ../STRIDE.md and
+../implementation_details.md. Staff setup now requires engineer OTP approval.

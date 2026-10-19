@@ -1,0 +1,49 @@
+
+running 44 tests
+test network::tests::framing_rejects_oversized_messages_before_allocating_payload ... ok
+test network::tests::incomplete_frames_are_rejected_even_when_the_peer_closes ... ok
+test network::tests::configured_worker_waits_for_data_on_an_inherited_nonblocking_socket ... ok
+test network::tests::expired_wire_request_cannot_create_election ... ok
+test network::tests::internal_certificate_role_binding_and_transport_incident_log ... ok
+test network::tests::otp_expiration_retry_limit_and_setup_rejection_over_tls ... ok
+test network::tests::signup_responses_close_tls_cleanly_on_both_hops ... ok
+test services::tests::audit_failure_rolls_back_election_edit ... ok
+test services::tests::ballots_are_atomic_immutable_and_do_not_link_to_identity ... ok
+test services::tests::cancelled_elections_disappear_without_deleting_audit ... ok
+test services::tests::delivery_failure_rolls_back_registration ... ok
+test services::tests::duplicate_and_invalid_registration_leave_no_partial_rows ... ok
+test network::tests::session_and_challenge_cannot_be_forged_replayed_or_used_on_another_gateway ... ok
+test network::tests::direct_endpoints_reject_bad_fields_and_cross_role_reads ... ok
+test services::tests::expired_mutation_does_not_commit ... ok
+test network::tests::tls_rejects_untrusted_ca_wrong_hostname_plaintext_and_missing_client_certificate ... ok
+test services::tests::initialization_is_idempotent_and_defaults_are_not_created_on_login ... ok
+test services::tests::email_delivery_failure_keeps_outbox_for_retry ... ok
+test services::tests::inbox_uses_phone_filename_and_rejects_paths ... ok
+test services::tests::concurrent_duplicate_submissions_commit_only_one_ballot ... ok
+test services::tests::legacy_account_schema_is_preserved ... ok
+test services::tests::otp_completes_once_and_wrong_role_cannot_log_in ... ok
+test services::tests::failed_password_and_otp_attempts_lock_and_log ... ok
+test services::tests::open_elections_are_frozen_and_foreign_keys_reject_other_elections ... ok
+test services::tests::lifecycle_tally_party_totals_and_announcement ... ok
+test services::tests::position_candidate_crud_and_linking_persist ... ok
+test services::tests::pin_attempt_limit_and_deactivated_user_session ... ok
+test services::tests::role_checks_and_cross_admin_ownership_are_enforced_in_services ... ok
+test network::tests::real_tls_full_election_and_role_privacy ... ok
+test services::tests::registration_generates_private_unique_pin_and_enrollment ... ok
+test services::tests::voter_update_enroll_and_remove_preserve_pin ... ok
+test services::tests::reopen_persists_election_edits_and_records ... ok
+test services::tests::security_failures_have_counts_and_private_email_notifications ... ok
+test ui::tests::invalid_signup_stays_in_form_without_database_write ... ok
+test ui::tests::ui_empty_results_and_role_switch_do_not_leak_previous_session ... ok
+test validation::tests::rejects_impossible_future_and_out_of_range_birth_dates ... ok
+test validation::tests::rejects_malformed_and_oversized_fields ... ok
+test ui::tests::ui_failed_write_does_not_create_a_local_placeholder ... ok
+test ui::tests::staff_signup_creates_both_roles_without_granting_a_login_session ... ok
+test ui::tests::ui_r_registers_voter_n_does_nothing_and_masks_password ... ok
+test ui::tests::ui_login_goes_to_menu_then_create_and_edit_load_database ... ok
+test ui::tests::ui_voter_casts_once_and_district_announces_tie ... ok
+test network::tests::server_watchdog_closes_stalled_handler_and_counts_timeout ... ok
+test network::tests::client_rejects_response_after_ten_second_deadline ... ok
+
+test result: ok. 44 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 11.01s
+

@@ -1,87 +1,92 @@
-# Validation report — version 0.1.2
+# Validation report — v0.2.2
 
-Validated on Linux with rustc 1.99.1 (2026-10-13) and the included Cargo.lock.
+Validated on Linux with rustc 1.99.1 and the included Cargo.lock. This is functional
+and negative-path testing, not certification, formal verification or a penetration test.
+Native macOS/Windows execution was not available. The earlier macOS accepted-socket
+blocking-mode fix is retained and covered by a portable regression test.
 
 | Check | Result |
 | --- | --- |
 | `cargo fmt --check` | Passed |
-| `cargo clippy --all-targets -- -D warnings` | Passed |
-| `cargo test --locked` | 33 passed, 0 failed |
-| `cargo build --locked` | Passed |
-| `python3 tests/terminal_smoke.py` | Passed |
+| Fresh Cargo Clippy | Blocked by dependency resolution |
+| Tests built with rustc and retained compiled dependencies | 44 passed, 0 failed |
+| Fresh `cargo build --locked` | Blocked by pinned num-traits 0.2.29; existing compiled dependencies used to rebuild binary |
+| Rustdoc with retained dependencies | Passed |
+| `python3 tests/terminal_smoke.py` | Passed; full real-TUI workflow including empty forms |
 
-## macOS socket-mode regression
+Run transcripts are included in `tests/latest-*-run.txt`. Tests use synthetic temporary
+accounts and databases. Rust fixtures use lower test-only bcrypt cost; the real compiled
+TUI smoke run uses normal bcrypt cost. Slow-response tests take about eleven seconds
+and verify rejection/connection closure at the ten-second budget, not acceptance of
+an eleven-second response.
 
-The listener is nonblocking, but TLS workers must use blocking sockets. Version
-0.1.2 explicitly calls `set_nonblocking(false)` on each connected socket, including
-accepted gateway and database sockets. This avoids platform-dependent inheritance.
-A regression test forces an accepted socket into nonblocking mode before applying
-configuration and delays the peer's data. It failed with `WouldBlock` before the fix
-and passes afterward. This reproduces the socket-mode defect on Linux; the user's
-macOS signup still needs confirmation on their machine.
+## Incorrect-input coverage (oral-exam question 10)
 
-## TLS signup regression checks
+| Layer | Rejected cases | Evidence |
+| --- | --- | --- |
+| Shared validation | Empty/malformed/oversized emails, path separators, invalid plus signs, short/long phone, nondigit/Unicode OTP, short signup password, oversized password, controls, impossible/future/old DOB | `validation::tests` |
+| TUI | Invalid signup remains open, secrets masked, no user row inserted; failed edits do not create local placeholders | `ui::tests` |
+| Direct endpoints | Wrong payload shape, blank/oversized name, impossible DOB, unknown endpoint, cross-role voter/audit/result reads; forged log text discarded | `direct_endpoints_reject_bad_fields_and_cross_role_reads` |
+| Authentication | Wrong passwords, OTP failure threshold/expiry/replay, cooldown, inactive user, forged/expired session, wrong role gateway, disabled setup | Authentication and network tests |
+| Database | Duplicate identity, wrong-election candidate, frozen configuration, invalid lifecycle, duplicate vote, ballot rewrite/delete, delivery/write failure rollback | Service tests; concurrent duplicate submission uses two SQLite connections |
+| Transport | Unknown CA, wrong hostname, absent internal client certificate, plaintext, oversized/truncated framing, nonblocking accepted socket | Network TLS/framing tests |
+| Deadline | Expired request cannot create election; expired mutation does not commit; slow response rejected; watchdog closes stalled handler | Four deadline tests |
+| Notifications | Failure counts and lockout events, secret exclusion, DO not receiving admin authentication alerts, delivery failure remains queued and retries | Security event and email retry tests |
 
-The patched code has now been compiled and tested with the installed Rust toolchain.
-Tests verify clean TLS shutdown after successful signup on both hops, rejection of
-incomplete frames, and a complete response after an 11-second server delay. The
-separate terminal smoke test uses normal bcrypt cost and creates both staff roles.
-The reported continuing error was not reproduced on Linux with this version.
+SQL parameters are bound. UI format checks are not treated as authorization. Cross-role
+requests are sent directly to the endpoint to show that hiding menu items is not the
+security boundary. A denied admin `ballots.list` also verifies there is no generic raw
+ballot endpoint; DO tally/result access is tested through supported operations.
 
-The delayed-response test intentionally takes about 11 seconds. Version 0.1.2 also
-reports the endpoint and transport phase when a TLS failure occurs, rather than
-showing an unexplained EOF alone. Use `cargo run --locked -- --version` to check
-which source is being executed.
+## Actual compiled TUI journey
 
-## What was exercised
+The Python script starts the binary in a POSIX pseudo-terminal and sends keyboard input:
 
-Database/service tests cover default election creation, idempotent initialization,
-legacy account preservation, position/candidate CRUD and shared assignments, owner
-and role checks, duplicate identity rejection, PIN generation, delivery rollback,
-OTP and password limits, enrollment changes, lifecycle transitions, timestamps,
-idempotent candidate/party tallies, election cancellation and audit retention.
+1. Read engineer setup OTP, reject empty signup, create Administrator and DO accounts.
+2. Generate the CA/server/distinct gateway certificates and start a separate TLS server.
+3. Start a client without APP_PEPPER, log in as admin with password and delivered OTP.
+4. Create default positions/candidates; add, rename and delete an extra position;
+   add, edit (name/party) and remove a candidate; reopen the saved election.
+5. Reject empty and duplicate registration, register a voter, inspect private PIN
+   delivery and the admin's registration audit screen.
+6. Log in as voter before opening; verify no election is selectable.
+7. Log in as DO and open election; verify state/timestamp in SQLite.
+8. Log in as voter, reject an incomplete ballot, then cast one choice per position.
+   Log back in and verify the election cannot be selected for another ballot.
+9. Close, tally and announce as DO; show winners without voter identities.
+10. Read admin participation audit without candidate/party choices; check actor IDs,
+    timestamps and database foreign-key integrity. Clean up all disposable data.
 
-Ballot tests inject a write failure to verify rollback, reject cross-election foreign
-keys, test update/delete prohibition, verify frozen ballot structure, and race two
-independent SQLite connections: exactly one ballot is accepted.
+The fixed-size terminal harness reconstructs cursor-addressed text for assertions;
+raw ANSI output is not a complete screen. Renderer tests additionally cover small
+terminals, masking, role switch/logout and ties/zero-vote results. Service/TLS tests
+exercise malicious requests that the UI does not expose, including post-close
+voting, duplicate submissions and unauthorized reads. A new audit-failure test
+checks rollback of a draft edit when its audit insert fails.
 
-Staff-signup tests create both roles, reject duplicate emails, check stored roles through
-the login endpoint, and confirm signup does not grant a session.
+## Remaining boundaries
 
-UI tests use Ratatui's test backend and actual TLS calls. They verify login leads to
-the four-option admin menu, create/edit reloads database state, failed writes do not
-leave local placeholders, R registers a voter while N does nothing, secrets are masked,
-small terminals render a resize message, voting is final, ties/zero-vote results are
-shown, and logout clears prior role state.
+No real email/SMS/national-ID provider was contacted. No claim is made about independent
+MFA, OS-root resistance, cryptographic ballot unlinkability, distributed flood protection
+or performance under election-scale load. See STRIDE.md. Failure to receive a response
+does not prove an earlier commit was rolled back. Email delivery can be duplicated after
+a crash; Event ID is the deduplication key.
 
-Network tests use real TCP sockets and both TLS hops. They verify an entire election,
-OTP expiry/retry/replay rejection, session expiry/logout, forged-token rejection,
-gateway role binding, untrusted CA/wrong hostname rejection, missing internal client
-certificate rejection, plaintext rejection, bounded framing, and transport-flood
-incident logging. No certificate-verification bypass is used in tests.
 
-The direct-usage smoke test starts the compiled program in a POSIX pseudo-terminal.
-It creates staff accounts using keyboard input, generates development certificates,
-starts a separate server process, and runs clients without a pepper in their environment.
-It then logs in with password+OTP, creates an election, registers a voter and reads the
-virtual PIN delivery, opens voting as an official, authenticates the voter with PIN+OTP,
-casts a complete ballot, closes/tallies/announces and checks SQLite foreign-key integrity.
+### Observed intermittent smoke failure
 
-The recorded smoke output was:
+One terminal run did not observe voter OTP delivery within the test wait. A diagnostic
+rerun passed the complete journey; the underlying failure was not reproduced. The
+harness now waits for the main screen before entering credentials rather than relying
+only on a fixed startup delay, and prints synthetic terminal output if OTP delivery
+fails. This is recorded as an unresolved intermittent observation, not a proven backend
+fix. Final run output is retained in `tests/latest-terminal-run.txt`.
 
-```text
-PASS: terminal setup creates admin and district official via TLS
-PASS: password + OTP login, election defaults, voter registration and PIN delivery
-PASS: district opens election; PIN + OTP voter submits one complete ballot
-PASS: close, tally, announce and database integrity
-All direct terminal smoke checks passed; temporary data removed.
-```
+Phone-named inbox regression: `inbox_uses_phone_filename_and_rejects_paths`
+checks exact delivery filename/content, engineer alias, and rejected traversal
+inputs. The real TUI script reads the new filenames during signup and login.
 
-## Limits of this validation
-
-The source was built and exercised on Linux, not on Windows/macOS. The terminal smoke
-script specifically requires POSIX; the Rust tests do not require Python. This was
-functional and negative-path testing, not a penetration test, load-capacity certification,
-formal proof of ballot secrecy or production-election audit. No real SMS, email or
-national-ID provider was contacted. See SECURITY.md before interpreting test success
-as a security guarantee.
+For v0.2.2, the fresh registry offered num-traits 0.2.19 but not the lockfile
+version 0.2.29. The dependency lock was not changed as part of this filename fix.
+The 44 tests and terminal run use the updated application compiled with retained
+dependency artifacts. This does not establish a working clean Cargo build.

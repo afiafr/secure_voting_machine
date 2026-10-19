@@ -1,6 +1,7 @@
 //! Rendering only: no database or network calls occur here.
 use super::*;
 
+/// Render a titled selectable list.
 fn draw_list(
     frame: &mut Frame,
     area: Rect,
@@ -24,6 +25,7 @@ fn draw_list(
     );
     frame.render_widget(Paragraph::new(help).wrap(Wrap { trim: true }), sections[1]);
 }
+/// Render the current screen, notices, forms and confirmations.
 pub(super) fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
     if area.width < 60 || area.height < 20 {
@@ -74,7 +76,7 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App) {
             draw_list(
                 frame,
                 page[1],
-                "Choose a role",
+                "who dis? (choose a role)",
                 items,
                 app.selected,
                 "Up/Down: navigate | Enter: select | Q: quit",
@@ -90,7 +92,7 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App) {
             draw_list(
                 frame,
                 page[1],
-                "Tasks",
+                "wat do? (what to do)",
                 items,
                 app.selected,
                 "Up/Down: navigate | Enter: select | R: register voters | Esc: sign out",
@@ -180,6 +182,7 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App) {
         );
     }
 }
+/// Render positions and candidates with the current editor selection.
 fn draw_ballot_editor(frame: &mut Frame, area: Rect, app: &mut App) {
     let voting = app.screen == Screen::Vote;
     let help = if voting {
@@ -269,6 +272,7 @@ fn draw_ballot_editor(frame: &mut Frame, area: Rect, app: &mut App) {
         }
     }
 }
+/// Render fields with secret values masked.
 fn draw_form(frame: &mut Frame, area: Rect, form: &Form) {
     frame.render_widget(Clear, area);
     let block = Block::bordered()
@@ -313,6 +317,7 @@ fn draw_form(frame: &mut Frame, area: Rect, form: &Form) {
     frame.render_widget(Paragraph::new(help).wrap(Wrap { trim: true }), sections[1]);
 }
 
+/// Render election state and district-official action hints.
 fn draw_district(frame: &mut Frame, area: Rect, app: &App) {
     let Some(election) = &app.election else {
         return;

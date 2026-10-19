@@ -1,9 +1,10 @@
 pub mod election;
 pub mod voters;
 use crate::{auth::login::Session, models::Role};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, Transaction};
 pub type AppResult<T> = Result<T, Box<dyn std::error::Error>>;
 
+/// Recheck the session against the active database role; log rejected access.
 pub(crate) fn require_role(conn: &Connection, session: &Session, role: Role) -> AppResult<()> {
     let valid: bool = conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM users WHERE id=?1 AND role=?2 AND active=1)",
@@ -23,6 +24,7 @@ pub(crate) fn require_role(conn: &Connection, session: &Session, role: Role) -> 
     }
     Ok(())
 }
+/// Insert a structured audit event; database triggers enqueue permitted notifications.
 pub(crate) fn audit(
     conn: &Connection,
     election: Option<i64>,
@@ -35,15 +37,29 @@ pub(crate) fn audit(
         params![election,actor,subject,event,severity])?;
     Ok(())
 }
-pub(crate) fn text(value: &str, label: &str) -> AppResult<String> {
-    let value = value.trim();
-    if value.is_empty() || value.len() > 200 || value.chars().any(char::is_control) {
-        return Err(
-            format!("{label} must contain 1-200 characters without control characters.").into(),
-        );
-    }
-    Ok(value.to_string())
-}
+pub(crate) use crate::validation::text;
 
 #[cfg(test)]
 mod tests;
+
+/// Record a successful election change and commit only while its deadline is valid.
+/// Taking ownership of the transaction ensures errors roll back both data and audit.
+fn finish_change(
+    tx: Transaction<'_>,
+    session: &Session,
+    election: i64,
+    subject: Option<i64>,
+    event: &str,
+) -> AppResult<()> {
+    audit(
+        &tx,
+        Some(election),
+        Some(session.user_id()),
+        subject,
+        event,
+        0,
+    )?;
+    crate::security::check_deadline()?;
+    tx.commit()?;
+    Ok(())
+}

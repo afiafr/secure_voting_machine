@@ -1,4 +1,6 @@
-# Secure-Ish Voting Machine
+# Secure Voting Machine 🗳️
+
+**Democracy, but make it terminal.** Course demo edition — v0.2.2.
 
 [![Rust](https://img.shields.io/badge/Rust-2021-orange?logo=rust)](https://www.rust-lang.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -16,6 +18,20 @@ PIN + OTP login. All client operations pass through encrypted role endpoints.
 [Installation](#installation) · [Staff signup](#sign-up-administrators-and-district-officials) ·
 [OTP & PIN](#otp-and-pin-delivery) · [Workflows](#role-workflows) ·
 [Tests](#tests) · [Architecture](docs/IMPLEMENTATION.md)
+
+## wat do? (what to do)
+
+Start with installation below, then `--signup` for staff accounts. The admin menu
+has four tasks: create, edit, register a voter, and read the audit log. Work through
+[the screenshot checklist](docs/USE_CASES.md) when rehearsing the demo.
+
+This version keeps ordinary functions and explicit endpoint matches. Shared
+transaction finishing and JSON serialization replace repeated boilerplate. There
+are **4,346 lines in non-test Rust files**, down from 4,665; separate Rust test files
+contain 1,584 lines. These are physical lines, including comments/blank lines and
+small embedded test helpers. `Cargo.lock` is generated dependency metadata, not application code.
+Total Rust source is 5,930 lines, down from 6,207 despite adding a regression test.
+No security mechanism or dependency was removed to shrink the count.
 
 ## Features
 
@@ -95,6 +111,12 @@ If using a GitHub checkout, open the repository directory containing `Cargo.toml
 
 ### 3. Build
 
+> v0.2.2 verification note: this environment could not resolve the existing
+> `num-traits 0.2.29` lockfile entry from the fresh registry. Tests used retained
+> compiled dependencies. A clean Cargo build needs that dependency-resolution
+> issue addressed; see `docs/TESTING.md`.
+
+
 ```sh
 cargo build --locked
 ```
@@ -145,6 +167,21 @@ Run the dedicated local signup screen:
 cargo run --locked -- --signup
 ```
 
+Before the signup screen opens, the engineer must approve it. In a **second terminal**,
+open the same project folder and run:
+
+```sh
+cargo run --locked -- --inbox engineer
+```
+
+Find the latest `Setup OTP: 123456` (your digits will differ). Enter those six digits
+in the first terminal and press Enter. The code expires after five minutes; three
+wrong entries lock setup for five minutes. This is a local teaching simulation:
+whoever controls this OS account can read the engineer inbox. Staff creation should
+be performed by your designated engineer, not by ordinary remote clients.
+
+Once the signup form appears:
+
 1. Enter an **email**, **password**, **full name**, and **phone number**.
 2. Press **Tab** to reach the role selector.
 3. Use **Left/Right** to choose **Administrator** or **District Official**.
@@ -177,6 +214,12 @@ After entering a password or PIN, open another terminal in the project directory
 ```sh
 cargo run --locked -- --inbox YOUR_REGISTERED_PHONE
 ```
+
+The file is named after the registered phone number. For example,
+`+15550000001` receives messages in `virtual_sms/+15550000001.txt` (or inside
+your configured `VOTING_SMS_DIR`). The engineer setup inbox is `engineer.txt`.
+Both login OTPs and voter registration PINs use this phone-named inbox. Older
+hash-named inbox files are left untouched; request a new OTP to use the new file.
 
 Enter the latest six-digit OTP in the voting terminal. OTPs expire after five
 minutes, allow three failures before cooldown, and are consumed on success.
@@ -306,7 +349,7 @@ migration notes before explicitly pointing `VOTING_DB` at existing data.
 | No OTP or PIN visible | Run `--inbox` with exactly the registered phone number and the same `VOTING_SMS_DIR` |
 | Email already exists | Sign in to that account or use a distinct email; signup does not overwrite accounts |
 | Screen says to resize | Increase the terminal to at least 60 × 20 |
-| TLS `close_notify` / unexpected EOF during signup | Stop old processes; verify version **0.1.2** using `cargo run --locked -- --version`, then run `cargo run --locked -- --signup` from this source directory. Keep your database and `.env`. See [validation report](docs/TESTING.md). If signup may have committed, try logging in before repeating it |
+| TLS `close_notify` / unexpected EOF during signup | Stop old processes; verify version **0.2.2** using `cargo run --locked -- --version`, then run `cargo run --locked -- --signup` from this source directory. Keep your database and `.env`. See [validation report](docs/TESTING.md). If signup may have committed, try logging in before repeating it |
 | Separate client cannot connect | Start `--serve`; use the same base port and public CA certificate |
 | Port already in use | Set a free `VOTING_PORT`; the following three ports must also be free |
 
@@ -319,10 +362,10 @@ migration notes before explicitly pointing `VOTING_DB` at existing data.
 
 ### If a TLS signup error continues
 
-Version 0.1.2 explicitly restores blocking mode on accepted TLS sockets for
-macOS/BSD compatibility. It also sends TLS shutdown notifications and allows 60 seconds for responses
-while retaining short inbound request limits. It was tested on Linux, including an
-11-second delayed response and real terminal signup at normal bcrypt cost.
+Version 0.2.2 retains the fix that restores blocking mode on accepted TLS sockets for
+macOS/BSD compatibility. It sends TLS shutdown notifications and enforces a ten-second request deadline.
+A response delayed beyond ten seconds is rejected. Real terminal signup uses normal
+bcrypt cost; test-only fixtures use a lower cost to keep unit tests fast.
 
 From the extracted project directory, run:
 
@@ -331,9 +374,83 @@ cargo run --locked -- --version
 cargo run --locked -- --signup
 ```
 
-The first command must show `secure_voting_machine 0.1.2`. Stop any older server/client
+The first command must show `secure_voting_machine 0.2.2`. Stop any older server/client
 processes before restarting. Do not remove your database or regenerate its pepper.
 If an error continues, record your OS, exact launch command and the full error text.
 The error now names the gateway/database endpoint and identifies whether failure
 occurred during connection, handshake/request sending, or response receipt. Do not
 include your password, PIN, OTP or `.env` contents in a bug report.
+
+
+## Security receipts, not vibes
+
+Read [STRIDE.md](STRIDE.md) for threats, controls, evidence and limitations. Start
+with [dummy.md](dummy.md) if the project currently looks like alphabet soup.
+[implementation_details.md](implementation_details.md) lists every Rust function,
+its signature, purpose and module, plus the important data and security contracts.
+
+### Error emails (local simulation)
+
+Alerts are appended to `virtual_sms/emails/<registered-email>.txt`. For example:
+
+```sh
+cat virtual_sms/emails/systemadmin@gmail.com.txt
+cat virtual_sms/emails/admin@example.com.txt
+```
+
+Replace the admin address with the email you registered. Set
+`VOTING_SYSTEM_EMAIL=your-engineer@example.com` in `.env` to change the system inbox.
+If `VOTING_SMS_DIR` is customized, use `<that-directory>/emails/` instead.
+These are text files, not messages sent to Gmail. The system inbox receives errors;
+the relevant admin receives account/election events. Unknown unauthenticated requests
+cannot reliably identify an election owner and go to the system inbox only. DO
+notifications contain election configuration/lifecycle events, not voter identity,
+participation or authentication logs. The database audit record is authoritative.
+Delivery retries use a durable outbox; a crash can duplicate an email with the same
+Event ID. Never share your inboxes, real database, pepper or private TLS keys.
+
+### Incorrect input: the app says no, politely
+
+The TUI validates email/phone format, real dates, field lengths, PIN/OTP length and
+password bounds before sending. Backend validation repeats the checks because a
+modified client can bypass the screen. Invalid forms stay open, display an error,
+and clear secret fields. No invalid registration should leave a partial database row.
+Authentication errors are logged without the submitted secrets. The backend accepts
+short wrong passwords for verification and counting; signup requires at least ten bytes.
+
+A request has **ten seconds total**, including TLS and response handling. Timeout
+closes that connection, not everyone else's. Never automatically retry a mutation:
+a write committed before the deadline can still lose its response. Refresh first.
+Five wrong passwords lock that identity for five minutes. Three wrong OTPs invalidate
+the challenge and lock that identity for five minutes. Ten wrong guesses against the
+same PIN value block that PIN lookup for five minutes, not all voters. These controls
+limit guessing but cannot prevent targeted lockout or every denial-of-service attack.
+
+### Code documentation
+
+Read `implementation_details.md` for the function inventory and `dummy.md` for
+the beginner walkthrough. Rust source comments stay beside their functions.
+Generated HTML documentation is excluded from the project.
+
+To refresh the Markdown inventory after editing code:
+
+```sh
+python3 scripts/generate_docs.py
+```
+
+### Before the demo
+
+```sh
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo test --locked
+cargo build --locked
+python3 tests/terminal_smoke.py
+```
+
+The last command actually drives keyboard input in the compiled TUI, starts a separate
+TLS server, uses virtual OTP/PIN inboxes and checks SQLite afterward. It uses disposable
+temporary data. See [docs/TESTING.md](docs/TESTING.md) for the exact evidence and limits.
+See [docs/DEMO.md](docs/DEMO.md) for questions 9–14 and an honest contribution worksheet.
+
+all best (all the best) — and keep the PIN out of the audit log.

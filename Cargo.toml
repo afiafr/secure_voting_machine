@@ -1,21 +1,21 @@
 [package]
 name = "secure_voting_machine"
-version = "0.1.2"
+version = "0.2.2"
 edition = "2021"
 license = "MIT"
 description = "Concepts of a secure voting machine"
 
 [dependencies]
-ratatui = "0.30.2"
+ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"] }
 crossterm = "0.29"
 sha2 = "0.10"
 uuid = { version = "1", features = ["v4"] }
-rusqlite = { version = "0.40.2", features = ["bundled"] }
+rusqlite = { version = "0.40.2", features = ["bundled", "hooks"] }
 bcrypt = "0.19.3"
 dotenvy = "0.15.7"
 hmac = "0.12"
 chrono = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 rcgen = "0.13"

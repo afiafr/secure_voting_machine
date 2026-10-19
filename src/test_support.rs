@@ -77,7 +77,7 @@ pub(crate) fn input(n: usize) -> VoterInput {
     }
 }
 pub(crate) fn message(root: &std::path::Path, phone: &str, prefix: &str) -> String {
-    fs::read_to_string(auth::login::mailbox_path(root, phone))
+    fs::read_to_string(auth::login::mailbox_path(root, phone).unwrap())
         .unwrap()
         .lines()
         .filter_map(|l| l.strip_prefix(prefix))

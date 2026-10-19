@@ -140,6 +140,7 @@ impl App {
         Ok(app)
     }
 
+    /// Initialize TUI state around an API client without a direct database connection.
     pub(crate) fn remote(conn: ApiClient, setup_mode: bool) -> Self {
         Self {
             conn,
@@ -184,18 +185,22 @@ impl App {
         app.network = Some(network);
         app
     }
+    /// Require an authenticated session before protected UI actions.
     fn session(&self) -> AppResult<&Session> {
         self.session.as_ref().ok_or_else(|| "Please log in.".into())
     }
+    /// Require a selected election and return its database ID.
     fn election_id(&self) -> AppResult<i64> {
         self.election
             .as_ref()
             .map(|e| e.id)
             .ok_or_else(|| "Choose an election.".into())
     }
+    /// Set the user-visible notice.
     fn info(&mut self, message: impl Into<String>) {
         self.notice = message.into();
     }
+    /// Build editable fields and open the requested form.
     fn form(
         &mut self,
         purpose: FormPurpose,
@@ -217,12 +222,14 @@ impl App {
         });
         self.notice.clear();
     }
+    /// Ask for confirmation before a destructive or final action.
     fn confirm(&mut self, message: &str, action: Action) {
         self.confirmation = Some(Confirmation {
             message: message.into(),
             action,
         });
     }
+    /// Clear local session, pending authentication and role-specific screen data.
     fn logout(&mut self) {
         if let Some(session) = &self.session {
             let _ = self.conn.logout(session);
@@ -239,8 +246,9 @@ impl App {
         self.confirmation = None;
         self.screen = Screen::Main;
         self.selected = 0;
-        self.notice = "Signed out.".into();
+        self.notice = "Signed out. all best (all the best)!".into();
     }
+    /// Reload selected election configuration from the backend after changes.
     fn reload_election(&mut self) -> AppResult<()> {
         let id = self.election_id()?;
         let e = election::get(&self.conn, self.session()?, id)?;
@@ -253,6 +261,7 @@ impl App {
             .min(self.rows().len().saturating_sub(1));
         Ok(())
     }
+    /// Fetch allowed elections and open the appropriate selection screen.
     fn load_elections(&mut self, purpose: SelectionPurpose) -> AppResult<()> {
         self.elections = election::list(&self.conn, self.session()?)?;
         self.selection_purpose = purpose;
@@ -265,6 +274,7 @@ impl App {
         };
         Ok(())
     }
+    /// Load the chosen election for editing, administration or voting.
     fn select_election(&mut self) -> AppResult<()> {
         let e = self
             .elections
@@ -295,24 +305,29 @@ impl App {
         self.notice = "Election loaded from database.".into();
         Ok(())
     }
+    /// Fetch the authorized enrollment/participation view.
     fn load_voters(&mut self) -> AppResult<()> {
         self.voters = voters::list(&self.conn, self.session()?, self.election_id()?)?;
         self.selected = self.selected.min(self.voters.len().saturating_sub(1));
         Ok(())
     }
+    /// Fetch the authorized election audit view.
     fn load_audit(&mut self) -> AppResult<()> {
         self.lines = election::audit_log(&self.conn, self.session()?, self.election_id()?)?;
         self.scroll = 0;
         Ok(())
     }
+    /// Flatten positions and candidates into editor rows.
     fn rows(&self) -> Vec<(usize, Option<usize>)> {
         ballot_rows(&self.positions)
     }
+    /// Resolve the selected editor row to position and optional candidate indices.
     fn current(&self) -> Option<(usize, Option<usize>)> {
         self.rows().get(self.ballot_cursor.row).copied()
     }
 }
 
+/// Build the row-to-position/candidate index mapping used by the editor.
 fn ballot_rows(positions: &[Position]) -> Vec<(usize, Option<usize>)> {
     let mut rows = Vec::new();
     for (p, position) in positions.iter().enumerate() {
@@ -324,6 +339,7 @@ fn ballot_rows(positions: &[Position]) -> Vec<(usize, Option<usize>)> {
     }
     rows
 }
+/// Drive the terminal draw/input loop and restore terminal state on exit.
 pub(crate) fn run(mut terminal: DefaultTerminal, mut app: App) -> io::Result<()> {
     while !app.quit {
         terminal.draw(|f| draw(f, &mut app))?;

@@ -10,6 +10,7 @@ pub struct ApiClient {
     pub(super) setup_token: Option<String>,
 }
 impl ApiClient {
+    /// Configure a CA-trusting client for the three role gateway addresses.
     pub fn connect(ca: &[u8], base_port: u16) -> AppResult<Self> {
         let addresses =
             std::array::from_fn(|i| SocketAddr::from(([127, 0, 0, 1], base_port + 1 + i as u16)));
@@ -19,6 +20,7 @@ impl ApiClient {
             setup_token: None,
         })
     }
+    /// Send one typed TLS request and decode its response or transport/service error.
     pub(super) fn request<T: serde::de::DeserializeOwned>(
         &self,
         role: Role,
@@ -30,6 +32,7 @@ impl ApiClient {
             self.addresses[role_index(role)],
             self.config.clone(),
             &Request {
+                deadline_ms: crate::security::now_ms() + 10_000,
                 role,
                 token,
                 operation: operation.into(),
@@ -44,17 +47,25 @@ impl ApiClient {
         }
         Ok(serde_json::from_value(response.value)?)
     }
+    /// Send an authenticated operation using the server-issued session token.
     pub(super) fn call<T: serde::de::DeserializeOwned>(
         &self,
         session: &Session,
         operation: &str,
-        args: Value,
+        args: impl serde::Serialize,
     ) -> AppResult<T> {
-        self.request(session.role, Some(session.token.clone()), operation, args)
+        self.request(
+            session.role,
+            Some(session.token.clone()),
+            operation,
+            serde_json::to_value(args)?,
+        )
     }
+    /// Clear local session, pending authentication and role-specific screen data.
     pub fn logout(&self, session: &Session) -> AppResult<()> {
         self.call(session, "logout", Value::Null)
     }
+    /// Report a client operation failure; the server stores only a fixed safe description.
     pub fn report_error(
         &self,
         session: Option<&Session>,
@@ -70,6 +81,7 @@ impl ApiClient {
     }
 }
 impl ClientAuth {
+    /// Verify staff credentials and retry limits; issue an OTP challenge on success.
     pub fn password_login(
         &self,
         conn: &ApiClient,
@@ -79,9 +91,11 @@ impl ClientAuth {
     ) -> AppResult<PendingLogin> {
         conn.request(role, None, "password", json!([email, password]))
     }
+    /// Verify a voter PIN and its scoped retry limit; issue an OTP challenge.
     pub fn pin_login(&self, conn: &ApiClient, pin: &str) -> AppResult<PendingLogin> {
         conn.request(Role::Voter, None, "pin", json!([pin]))
     }
+    /// Consume a valid OTP once and issue a session; count failures and expire challenges.
     pub fn complete_otp(
         &self,
         conn: &ApiClient,
@@ -97,6 +111,7 @@ impl ClientAuth {
     }
 }
 
+/// Create a staff account and password verifier through the engineer setup capability.
 pub fn provision(
     conn: &mut ApiClient,
     _auth: &ClientAuth,

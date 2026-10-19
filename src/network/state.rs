@@ -17,7 +17,9 @@ pub(super) struct State {
     pub(super) setup_token: Option<String>,
 }
 impl State {
+    /// Validate gateway role, authenticate challenges/sessions and dispatch authorized operations.
     pub(super) fn dispatch(&mut self, request: Request, peer_role: Role) -> AppResult<Value> {
+        crate::security::check_deadline()?;
         if request.role != peer_role {
             return Err("Wrong role gateway.".into());
         }
@@ -124,12 +126,22 @@ impl State {
                 "logout" => Ok(Value::Null),
                 "error" => {
                     let (screen, message): (String, String) = serde_json::from_value(request.args)?;
-                    let screen = services::text(&screen, "Screen")?;
+                    let _ = screen;
+                    let screen = "terminal-client";
                     // No form values, PINs, tokens or ballot selections are logged.
-                    let message = message.chars().take(500).collect::<String>();
+                    let _ = message; // Never store arbitrary client-supplied log text.
+                    let message = "Client reported an operation failure";
                     self.conn.execute(
                         "INSERT INTO error_reports(actor_user_id,screen,message) VALUES (?1,?2,?3)",
                         rusqlite::params![record.session.user_id(), screen, message],
+                    )?;
+                    services::audit(
+                        &self.conn,
+                        None,
+                        Some(record.session.user_id()),
+                        None,
+                        "client_error",
+                        3,
                     )?;
                     Ok(Value::Null)
                 }

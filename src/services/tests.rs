@@ -160,6 +160,7 @@ fn lifecycle_tally_party_totals_and_announcement() {
     election::cast(&mut f.conn, &s2, e, &c).unwrap();
     assert!(election::cast(&mut f.conn, &s, e, &c).is_err());
     election::close(&mut f.conn, &f.official, e).unwrap();
+    assert!(election::cast(&mut f.conn, &s, e, &c).is_err());
     election::tally(&mut f.conn, &f.official, e).unwrap();
     election::tally(&mut f.conn, &f.official, e).unwrap();
     let results = election::results(&f.conn, &f.official, e).unwrap();
@@ -194,6 +195,7 @@ fn ballots_are_atomic_immutable_and_do_not_link_to_identity() {
     let c = choices(&f.conn, &f.admin, e, 0);
     election::start(&mut f.conn, &f.official, e).unwrap();
     assert!(election::cast(&mut f.conn, &s, e, &c[..2]).is_err());
+    assert!(election::cast(&mut f.conn, &s, e, &[c[0], c[0], c[2]]).is_err());
     f.conn.execute_batch("CREATE TRIGGER test_fail BEFORE INSERT ON ballot_choices BEGIN SELECT RAISE(ABORT,'injected failure'); END;").unwrap();
     assert!(election::cast(&mut f.conn, &s, e, &c).is_err());
     assert_eq!(count(&f.conn, "ballots"), 0);
@@ -445,9 +447,132 @@ fn pin_attempt_limit_and_deactivated_user_session() {
     for _ in 0..10 {
         assert!(f.auth.pin_login(&f.conn, "invalid").is_err());
     }
-    assert!(f.auth.pin_login(&f.conn, &pin).is_err());
+    assert!(f.auth.pin_login(&f.conn, &pin).is_ok());
     f.conn
         .execute("UPDATE users SET active=0 WHERE id=?1", [v])
         .unwrap();
     assert!(election::list(&f.conn, &Session::for_test(v, Role::Voter)).is_err());
+}
+
+#[test]
+fn security_failures_have_counts_and_private_email_notifications() {
+    let f = Fixture::new();
+    for _ in 0..5 {
+        let _ = f
+            .auth
+            .password_login(&f.conn, "admin@example.test", "wrong-password", Role::Admin);
+    }
+    let count: i64 = f
+        .conn
+        .query_row(
+            "SELECT count(*) FROM security_events WHERE user_id=1 AND event_type='password_failed'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 5);
+    let max: i64 = f
+        .conn
+        .query_row(
+            "SELECT max(attempts) FROM security_events WHERE event_type='password_failed'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(max, 5);
+    f.auth.flush_notifications(&f.conn).unwrap();
+    let admin = std::fs::read_to_string(f.root.join("emails/admin@example.test.txt")).unwrap();
+    let system = std::fs::read_to_string(f.root.join("emails/systemadmin@gmail.com.txt")).unwrap();
+    assert!(admin.contains("authentication_locked"));
+    assert!(system.contains("password_failed"));
+    assert!(!admin.contains("wrong-password"));
+    assert!(!f.root.join("emails/official@example.test.txt").exists());
+    let pending: i64 = f
+        .conn
+        .query_row(
+            "SELECT count(*) FROM email_outbox WHERE delivered=0",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(pending, 0);
+}
+
+#[test]
+fn expired_mutation_does_not_commit() {
+    let mut f = Fixture::new();
+    crate::security::set_deadline(crate::security::now_ms().saturating_sub(1));
+    let result = election::create(&mut f.conn, &f.admin, "Too late");
+    crate::security::clear_deadline();
+    assert!(result.is_err());
+    assert_eq!(count(&f.conn, "elections"), 0);
+}
+
+#[test]
+fn email_delivery_failure_keeps_outbox_for_retry() {
+    let f = Fixture::new();
+    std::fs::create_dir_all(&f.root).unwrap();
+    std::fs::write(f.root.join("emails"), "blocks directory creation").unwrap();
+    crate::security::event(&f.conn, Some(1), "password_failed", None, 1).unwrap();
+    assert!(f.auth.flush_emails(&f.conn).is_err());
+    let pending: i64 = f
+        .conn
+        .query_row(
+            "SELECT count(*) FROM email_outbox WHERE delivered=0",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(pending > 0);
+    std::fs::remove_file(f.root.join("emails")).unwrap();
+    f.auth.flush_emails(&f.conn).unwrap();
+    let remaining: i64 = f
+        .conn
+        .query_row(
+            "SELECT count(*) FROM email_outbox WHERE delivered=0",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(remaining, 0);
+}
+
+#[test]
+fn audit_failure_rolls_back_election_edit() {
+    let mut f = Fixture::new();
+    let e = f.create();
+    let before = election::get(&f.conn, &f.admin, e).unwrap().name;
+    let events = count(&f.conn, "audit_events");
+    f.conn
+        .execute_batch(
+            "CREATE TRIGGER fail_audit BEFORE INSERT ON audit_events
+         WHEN NEW.event_type='election_renamed'
+         BEGIN SELECT RAISE(ABORT,'test audit failure'); END;",
+        )
+        .unwrap();
+    assert!(election::rename(&mut f.conn, &f.admin, e, "Must roll back").is_err());
+    assert_eq!(election::get(&f.conn, &f.admin, e).unwrap().name, before);
+    assert_eq!(count(&f.conn, "audit_events"), events);
+    f.conn.execute_batch("DROP TRIGGER fail_audit;").unwrap();
+    election::rename(&mut f.conn, &f.admin, e, "Saved with audit").unwrap();
+    assert_eq!(
+        election::get(&f.conn, &f.admin, e).unwrap().name,
+        "Saved with audit"
+    );
+    assert_eq!(count(&f.conn, "audit_events"), events + 1);
+}
+
+#[test]
+fn inbox_uses_phone_filename_and_rejects_paths() {
+    let f = Fixture::new();
+    f.auth.deliver("+15550000001", "Login OTP: 123456").unwrap();
+    assert_eq!(
+        fs::read_to_string(f.root.join("+15550000001.txt")).unwrap(),
+        "Login OTP: 123456\n"
+    );
+    f.auth.deliver("engineer", "Setup OTP: 654321").unwrap();
+    assert!(f.root.join("engineer.txt").exists());
+    for invalid in ["../escape", "/tmp/escape", "..\\escape", "", "123/4567890"] {
+        assert!(f.auth.deliver(invalid, "must not write").is_err());
+    }
 }

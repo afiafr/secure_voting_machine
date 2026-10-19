@@ -1,5 +1,5 @@
 //! Election CRUD and lifecycle. Every mutation checks the session in this layer.
-use super::{audit, require_role, text, AppResult};
+use super::{audit, finish_change, require_role, text, AppResult};
 use crate::{
     auth::login::Session,
     models::{Candidate, Election, Position, ResultRow, Role},
@@ -8,6 +8,7 @@ use rusqlite::{params, Connection, TransactionBehavior};
 use std::collections::HashSet;
 use uuid::Uuid;
 
+/// Require election ownership by the administrator, optionally requiring draft status.
 fn owned(conn: &Connection, session: &Session, election: i64, draft: bool) -> AppResult<()> {
     require_role(conn, session, Role::Admin)?;
     let found: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM elections WHERE election_id=?1 AND created_by=?2 AND (?3=0 OR status='draft'))",
@@ -17,6 +18,7 @@ fn owned(conn: &Connection, session: &Session, election: i64, draft: bool) -> Ap
     }
     Ok(())
 }
+/// Check whether this role/session may read the requested election.
 fn read_allowed(conn: &Connection, session: &Session, election: i64) -> AppResult<()> {
     require_role(conn, session, session.role())?;
     let yes: bool = match session.role() {
@@ -29,6 +31,7 @@ fn read_allowed(conn: &Connection, session: &Session, election: i64) -> AppResul
     }
     Ok(())
 }
+/// Return records visible to the authenticated role and ownership scope.
 pub fn list(conn: &Connection, session: &Session) -> AppResult<Vec<Election>> {
     require_role(conn, session, session.role())?;
     let mut q=conn.prepare("SELECT e.election_id,e.name,e.status,e.announced_at IS NOT NULL FROM elections e
@@ -46,10 +49,12 @@ pub fn list(conn: &Connection, session: &Session) -> AppResult<Vec<Election>> {
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
+/// Read one authorized election by its ID.
 pub fn get(conn: &Connection, session: &Session, id: i64) -> AppResult<Election> {
     read_allowed(conn, session, id)?;
     Ok(conn.query_row("SELECT election_id,name,status,announced_at IS NOT NULL FROM elections WHERE election_id=?1",[id],|r|Ok(Election{id:r.get(0)?,name:r.get(1)?,status:r.get(2)?,announced:r.get(3)?}))?)
 }
+/// Read the authorized election positions and their assigned candidates.
 pub fn positions(conn: &Connection, session: &Session, election: i64) -> AppResult<Vec<Position>> {
     read_allowed(conn, session, election)?;
     let mut q=conn.prepare("SELECT position_id,name FROM election_positions WHERE election_id=?1 ORDER BY display_order,position_id")?;
@@ -75,6 +80,7 @@ pub fn positions(conn: &Connection, session: &Session, election: i64) -> AppResu
     }
     Ok(positions)
 }
+/// Create a draft election and default positions/candidates in one transaction.
 pub fn create(conn: &mut Connection, session: &Session, name: &str) -> AppResult<i64> {
     let name = text(name, "Election name")?;
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -112,17 +118,10 @@ pub fn create(conn: &mut Connection, session: &Session, name: &str) -> AppResult
             )?;
         }
     }
-    audit(
-        &tx,
-        Some(id),
-        Some(session.user_id()),
-        None,
-        "election_created",
-        0,
-    )?;
-    tx.commit()?;
+    finish_change(tx, session, id, None, "election_created")?;
     Ok(id)
 }
+/// Rename an owned draft election and record the change.
 pub fn rename(
     conn: &mut Connection,
     session: &Session,
@@ -136,16 +135,7 @@ pub fn rename(
         "UPDATE elections SET name=?1 WHERE election_id=?2",
         params![name, election],
     )?;
-    audit(
-        &tx,
-        Some(election),
-        Some(session.user_id()),
-        None,
-        "election_renamed",
-        0,
-    )?;
-    tx.commit()?;
-    Ok(())
+    finish_change(tx, session, election, None, "election_renamed")
 }
 /// Draft deletion is a cancellation, preserving the audit trail.
 pub fn delete(conn: &mut Connection, session: &Session, election: i64) -> AppResult<()> {
@@ -155,17 +145,9 @@ pub fn delete(conn: &mut Connection, session: &Session, election: i64) -> AppRes
         "UPDATE elections SET status='cancelled' WHERE election_id=?1",
         [election],
     )?;
-    audit(
-        &tx,
-        Some(election),
-        Some(session.user_id()),
-        None,
-        "election_cancelled",
-        0,
-    )?;
-    tx.commit()?;
-    Ok(())
+    finish_change(tx, session, election, None, "election_cancelled")
 }
+/// Add a position to an owned draft and record the change.
 pub fn add_position(
     conn: &mut Connection,
     session: &Session,
@@ -191,17 +173,9 @@ pub fn add_position(
             params![election, position, tx.last_insert_rowid()],
         )?;
     }
-    audit(
-        &tx,
-        Some(election),
-        Some(session.user_id()),
-        None,
-        "position_added",
-        0,
-    )?;
-    tx.commit()?;
-    Ok(())
+    finish_change(tx, session, election, None, "position_added")
 }
+/// Reject a position that does not belong to the specified election.
 fn position_exists(conn: &Connection, election: i64, position: i64) -> AppResult<()> {
     let found: bool = conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM election_positions WHERE election_id=?1 AND position_id=?2)",
@@ -213,6 +187,7 @@ fn position_exists(conn: &Connection, election: i64, position: i64) -> AppResult
     }
     Ok(())
 }
+/// Rename an owned draft position after validating election membership.
 pub fn rename_position(
     conn: &mut Connection,
     session: &Session,
@@ -228,17 +203,9 @@ pub fn rename_position(
         "UPDATE election_positions SET name=?1 WHERE position_id=?2",
         params![name, position],
     )?;
-    audit(
-        &tx,
-        Some(election),
-        Some(session.user_id()),
-        None,
-        "position_updated",
-        0,
-    )?;
-    tx.commit()?;
-    Ok(())
+    finish_change(tx, session, election, None, "position_updated")
 }
+/// Remove a draft position and its assignments, preserving minimum constraints.
 pub fn delete_position(
     conn: &mut Connection,
     session: &Session,
@@ -265,21 +232,14 @@ pub fn delete_position(
         [position],
     )?;
     delete_orphans(&tx, election)?;
-    audit(
-        &tx,
-        Some(election),
-        Some(session.user_id()),
-        None,
-        "position_deleted",
-        0,
-    )?;
-    tx.commit()?;
-    Ok(())
+    finish_change(tx, session, election, None, "position_deleted")
 }
+/// Remove candidate rows that have no remaining position assignments.
 fn delete_orphans(conn: &Connection, election: i64) -> AppResult<()> {
     conn.execute("DELETE FROM candidates WHERE election_id=?1 AND NOT EXISTS(SELECT 1 FROM position_candidates pc WHERE pc.candidate_id=candidates.candidate_id)",[election])?;
     Ok(())
 }
+/// Create and assign a candidate to a draft position transactionally.
 pub fn add_candidate(
     conn: &mut Connection,
     session: &Session,
@@ -301,17 +261,9 @@ pub fn add_candidate(
         "INSERT INTO position_candidates VALUES (?1,?2,?3)",
         params![election, position, tx.last_insert_rowid()],
     )?;
-    audit(
-        &tx,
-        Some(election),
-        Some(session.user_id()),
-        None,
-        "candidate_added",
-        0,
-    )?;
-    tx.commit()?;
-    Ok(())
+    finish_change(tx, session, election, None, "candidate_added")
 }
+/// Assign an existing candidate to another position in the same draft election.
 pub fn link_candidate(
     conn: &mut Connection,
     session: &Session,
@@ -326,17 +278,9 @@ pub fn link_candidate(
         "INSERT INTO position_candidates VALUES (?1,?2,?3)",
         params![election, position, candidate],
     )?;
-    audit(
-        &tx,
-        Some(election),
-        Some(session.user_id()),
-        None,
-        "candidate_linked",
-        0,
-    )?;
-    tx.commit()?;
-    Ok(())
+    finish_change(tx, session, election, None, "candidate_linked")
 }
+/// Update a draft candidate name/party and audit the change.
 pub fn update_candidate(
     conn: &mut Connection,
     session: &Session,
@@ -350,17 +294,9 @@ pub fn update_candidate(
     let tx = conn.transaction()?;
     owned(&tx, session, election, true)?;
     if tx.execute("UPDATE candidates SET full_name=?1,political_party=?2 WHERE election_id=?3 AND candidate_id=?4",params![name,party,election,candidate])? !=1 { return Err("Candidate not found in election.".into()); }
-    audit(
-        &tx,
-        Some(election),
-        Some(session.user_id()),
-        None,
-        "candidate_updated",
-        0,
-    )?;
-    tx.commit()?;
-    Ok(())
+    finish_change(tx, session, election, None, "candidate_updated")
 }
+/// Remove a candidate assignment from a draft position.
 pub fn unlink_candidate(
     conn: &mut Connection,
     session: &Session,
@@ -381,17 +317,9 @@ pub fn unlink_candidate(
     }
     if tx.execute("DELETE FROM position_candidates WHERE election_id=?1 AND position_id=?2 AND candidate_id=?3",params![election,position,candidate])? !=1 { return Err("Candidate not assigned to this position.".into()); }
     delete_orphans(&tx, election)?;
-    audit(
-        &tx,
-        Some(election),
-        Some(session.user_id()),
-        None,
-        "candidate_unlinked",
-        0,
-    )?;
-    tx.commit()?;
-    Ok(())
+    finish_change(tx, session, election, None, "candidate_unlinked")
 }
+/// Require a district official, validate minimum ballot configuration and open voting.
 pub fn start(conn: &mut Connection, session: &Session, election: i64) -> AppResult<()> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     require_role(&tx, session, Role::DistrictOfficial)?;
@@ -405,31 +333,14 @@ pub fn start(conn: &mut Connection, session: &Session, election: i64) -> AppResu
         return Err("At least three positions and two candidates each are required.".into());
     }
     if tx.execute("UPDATE elections SET status='open',opened_by=?1,started_at=CURRENT_TIMESTAMP,opened_at=CURRENT_TIMESTAMP WHERE election_id=?2 AND status='draft'",params![session.user_id(),election])? !=1 { return Err("Only a draft election can be opened.".into()); }
-    audit(
-        &tx,
-        Some(election),
-        Some(session.user_id()),
-        None,
-        "election_opened",
-        0,
-    )?;
-    tx.commit()?;
-    Ok(())
+    finish_change(tx, session, election, None, "election_opened")
 }
+/// Require a district official, close the open election and record its timestamp.
 pub fn close(conn: &mut Connection, session: &Session, election: i64) -> AppResult<()> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     require_role(&tx, session, Role::DistrictOfficial)?;
     if tx.execute("UPDATE elections SET status='closed',closed_by=?1,closed_at=CURRENT_TIMESTAMP WHERE election_id=?2 AND status='open'",params![session.user_id(),election])? !=1 { return Err("Only an open election can be closed.".into()); }
-    audit(
-        &tx,
-        Some(election),
-        Some(session.user_id()),
-        None,
-        "election_closed",
-        0,
-    )?;
-    tx.commit()?;
-    Ok(())
+    finish_change(tx, session, election, None, "election_closed")
 }
 /// A whole ballot is submitted once. Editing selections before confirmation is allowed.
 /// No identity or credential is written to ballots/ballot_choices.
@@ -481,17 +392,15 @@ pub fn cast(
             params![election, ballot, position, candidate],
         )?;
     }
-    audit(
-        &tx,
-        Some(election),
-        Some(session.user_id()),
+    finish_change(
+        tx,
+        session,
+        election,
         Some(session.user_id()),
         "voter_participated",
-        0,
-    )?;
-    tx.commit()?;
-    Ok(())
+    )
 }
+/// Require a closed election and district official; persist candidate/party totals.
 pub fn tally(conn: &mut Connection, session: &Session, election: i64) -> AppResult<()> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     require_role(&tx, session, Role::DistrictOfficial)?;
@@ -512,32 +421,16 @@ pub fn tally(conn: &mut Connection, session: &Session, election: i64) -> AppResu
     tx.execute("INSERT INTO candidate_results SELECT pc.election_id,pc.position_id,pc.candidate_id,count(bc.ballot_id) FROM position_candidates pc LEFT JOIN ballot_choices bc ON bc.election_id=pc.election_id AND bc.position_id=pc.position_id AND bc.candidate_id=pc.candidate_id WHERE pc.election_id=?1 GROUP BY pc.election_id,pc.position_id,pc.candidate_id",[election])?;
     tx.execute("INSERT INTO party_results SELECT r.election_id,r.position_id,c.political_party,sum(r.votes) FROM candidate_results r JOIN candidates c ON c.candidate_id=r.candidate_id WHERE r.election_id=?1 GROUP BY r.election_id,r.position_id,c.political_party",[election])?;
     tx.execute("UPDATE elections SET status='tallied',tallied_by=?1,tallied_at=CURRENT_TIMESTAMP WHERE election_id=?2",params![session.user_id(),election])?;
-    audit(
-        &tx,
-        Some(election),
-        Some(session.user_id()),
-        None,
-        "election_tallied",
-        0,
-    )?;
-    tx.commit()?;
-    Ok(())
+    finish_change(tx, session, election, None, "election_tallied")
 }
+/// Require district-official authorization and a tally; mark results announced.
 pub fn announce(conn: &mut Connection, session: &Session, election: i64) -> AppResult<()> {
     let tx = conn.transaction()?;
     require_role(&tx, session, Role::DistrictOfficial)?;
     if tx.execute("UPDATE elections SET announced_by=?1,announced_at=CURRENT_TIMESTAMP WHERE election_id=?2 AND status='tallied' AND announced_at IS NULL",params![session.user_id(),election])? !=1 { return Err("Tally first; results may already be announced.".into()); }
-    audit(
-        &tx,
-        Some(election),
-        Some(session.user_id()),
-        None,
-        "results_announced",
-        0,
-    )?;
-    tx.commit()?;
-    Ok(())
+    finish_change(tx, session, election, None, "results_announced")
 }
+/// Require a district official and return candidate vote totals without voter identities.
 pub fn results(conn: &Connection, session: &Session, election: i64) -> AppResult<Vec<ResultRow>> {
     require_role(conn, session, Role::DistrictOfficial)?;
     let mut q=conn.prepare("SELECT p.name,c.full_name,c.political_party,r.votes FROM candidate_results r JOIN election_positions p ON p.position_id=r.position_id JOIN candidates c ON c.candidate_id=r.candidate_id WHERE r.election_id=?1 ORDER BY p.display_order,r.votes DESC,c.candidate_id")?;
@@ -551,6 +444,7 @@ pub fn results(conn: &Connection, session: &Session, election: i64) -> AppResult
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
+/// Require a district official and return party totals by position.
 pub fn party_results(
     conn: &Connection,
     session: &Session,
@@ -568,12 +462,13 @@ pub fn party_results(
     })?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
+/// Return the owning admin’s lifecycle/participation view, excluding ballot choices.
 pub fn audit_log(conn: &Connection, session: &Session, election: i64) -> AppResult<Vec<String>> {
     owned(conn, session, election, false)?;
     // Explicit allowlist of columns: never expose credential or ballot tables.
     let mut q=conn.prepare("SELECT a.occurred_at,a.event_type,COALESCE(u.full_name,'System'),COALESCE(s.full_name,''),a.severity
         FROM audit_events a LEFT JOIN users u ON u.id=a.actor_user_id LEFT JOIN users s ON s.id=a.subject_user_id
-        WHERE a.election_id=?1 OR (a.election_id IS NULL AND (a.actor_user_id=?2 OR a.severity>0)) ORDER BY a.event_id DESC LIMIT 1000")?;
+        WHERE a.election_id=?1 OR (a.election_id IS NULL AND a.actor_user_id=?2) ORDER BY a.event_id DESC LIMIT 1000")?;
     let rows = q.query_map(params![election, session.user_id()], |r| {
         Ok(format!(
             "{} | {} | actor: {} | voter: {} | level {}",
