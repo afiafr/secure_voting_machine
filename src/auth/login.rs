@@ -5,6 +5,8 @@ use crate::{
     services::{audit, AppResult},
 };
 use bcrypt::{hash, verify, DEFAULT_COST};
+use chrono::{DateTime, Duration, Utc};
+use chrono_tz::America::New_York;
 use hmac::{Hmac, Mac};
 use rusqlite::{params, Connection, OptionalExtension};
 use sha2::Sha256;
@@ -122,7 +124,7 @@ impl Auth {
         let record: Option<(i64, String)> = conn
             .query_row(
                 "SELECT u.id,c.password_hash FROM users u JOIN user_credentials c ON c.user_id=u.id
-                WHERE lower(u.email)=lower(?1) AND u.role=?2 AND u.active=1",
+             WHERE lower(u.email)=lower(?1) AND u.role=?2 AND u.active=1",
                 params![email.trim(), role.as_str()],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
@@ -167,20 +169,20 @@ impl Auth {
     fn issue_otp(&self, conn: &Connection, id: i64, role: Role) -> AppResult<PendingLogin> {
         crate::security::check_deadline()?;
         check_limit(conn, &format!("otp:{id}"))?;
-        let phone: String =
-            conn.query_row("SELECT phone_number FROM users WHERE id=?1", [id], |r| {
-                r.get(0)
-            })?;
-        let code = format!("{:06}", Uuid::new_v4().as_u128() % 1_000_000);
-        self.deliver(
-            &phone,
-            &format!("Login OTP: {code}\nExpires in 5 minutes.\n"),
+        let (phone, name): (String, String) = conn.query_row(
+            "SELECT phone_number, full_name FROM users WHERE id=?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )?;
+        let code = format!("{:06}", Uuid::new_v4().as_u128() % 1_000_000);
+        let sent = Utc::now();
+        let expires = (sent + Duration::minutes(5)).timestamp();
+        self.deliver(&phone, &otp_message(&name, &phone, "Login", &code, sent))?;
         Ok(PendingLogin {
             user_id: id,
             role,
             code_hash: self.lookup(&code),
-            expires: now() + 300,
+            expires,
             attempts: 0,
         })
     }
@@ -260,11 +262,12 @@ impl Auth {
     pub fn approve_setup(&self, conn: &Connection) -> AppResult<()> {
         check_limit(conn, "engineer-setup")?;
         let code = format!("{:06}", Uuid::new_v4().as_u128() % 1_000_000);
+        let sent = Utc::now();
+        let expires = (sent + Duration::minutes(5)).timestamp();
         self.deliver(
             "engineer",
-            &format!("Setup OTP: {code}\nExpires in 5 minutes."),
+            &otp_message("Engineer", "engineer", "Setup", &code, sent),
         )?;
-        let expires = now() + 300;
         println!("Engineer approval required. Read --inbox engineer in another terminal, then enter Setup OTP:");
         for _ in 0..3 {
             let mut input = String::new();
@@ -346,13 +349,11 @@ impl Auth {
 /// Use the validated phone number as the inbox filename; reject path characters.
 pub fn mailbox_path(root: &Path, phone: &str) -> AppResult<PathBuf> {
     let phone = phone.trim();
-
     let name = if phone == "engineer" {
         phone.to_owned()
     } else {
         crate::validation::phone(phone)?
     };
-
     Ok(root.join(format!("{name}.txt")))
 }
 /// Return Unix seconds for persisted authentication expiry timestamps.
@@ -429,4 +430,63 @@ fn failed(
         crate::security::event(conn, user, "authentication_locked", Some(scope), count)?;
     }
     Ok(())
+}
+
+/// Render a virtual text with New York time; keep the existing code line for readers/tests.
+fn otp_message(name: &str, phone: &str, purpose: &str, code: &str, sent: DateTime<Utc>) -> String {
+    let sent = sent.with_timezone(&New_York);
+    let expires = sent + Duration::minutes(5);
+    let display_time = "%Y-%m-%d %I:%M:%S %p %Z (UTC%:z)";
+    // Legacy names must not inject extra message headers or terminal controls.
+    let name: String = name
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    format!(
+        "From: Secure Voting Machine — {purpose} Verification\n\
+         To: {name} <{phone}>\n\
+         Sent: {}\n\n\
+         Hi, {name}! Please find your OTP verification code below.\n\
+         {purpose} OTP: {code}\n\
+         This code expires in 5 minutes at {}.\n\
+         Use it once and keep it private. If you did not request it, do not share it.\n\
+         ---\n",
+        sent.format(display_time),
+        expires.format(display_time),
+    )
+}
+
+#[cfg(test)]
+mod message_tests {
+    use super::*;
+
+    #[test]
+    fn otp_text_names_recipient_and_formats_est_and_edt() {
+        for (date, zone, hour) in [
+            ("2026-01-15T18:00:00Z", "EST (UTC-05:00)", "01"),
+            ("2026-07-15T18:00:00Z", "EDT (UTC-04:00)", "02"),
+        ] {
+            let sent = DateTime::parse_from_rfc3339(date)
+                .unwrap()
+                .with_timezone(&Utc);
+            let text = otp_message("Afia", "+15550000001", "Login", "123456", sent);
+            assert!(text.contains("From: Secure Voting Machine — Login Verification"));
+            assert!(text.contains("To: Afia <+15550000001>"));
+            assert!(text.contains("Hi, Afia!"));
+            assert!(text.contains("Login OTP: 123456\n"));
+            assert!(text.contains(&format!("{hour}:00:00 PM {zone}")));
+            assert!(text.contains(&format!("{hour}:05:00 PM {zone}")));
+        }
+    }
+
+    #[test]
+    fn expiry_is_five_minutes_even_when_clocks_fall_back() {
+        let sent = DateTime::parse_from_rfc3339("2026-11-01T05:58:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let text = otp_message("Engineer", "engineer", "Setup", "654321", sent);
+        assert!(text.contains("01:58:00 AM EDT (UTC-04:00)"));
+        assert!(text.contains("01:03:00 AM EST (UTC-05:00)"));
+        assert!(text.contains("Setup OTP: 654321\n"));
+    }
 }
