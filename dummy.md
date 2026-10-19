@@ -162,6 +162,8 @@ After building successfully:
    or District Official. Press Enter to submit.
 6. Signup creates the account; it does not log you in. Create the other staff role
    through the signup option, or launch `--signup` again and approve setup again.
+   
+   `cargo run -- --signup`.
 7. Exit with Ctrl+C. Start the normal app with the command below.
 
 Staff signup is an explicit local engineer capability. An ordinary voter cannot

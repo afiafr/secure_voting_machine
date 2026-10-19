@@ -346,11 +346,13 @@ impl Auth {
 /// Use the validated phone number as the inbox filename; reject path characters.
 pub fn mailbox_path(root: &Path, phone: &str) -> AppResult<PathBuf> {
     let phone = phone.trim();
+
     let name = if phone == "engineer" {
         phone.to_owned()
     } else {
         crate::validation::phone(phone)?
     };
+
     Ok(root.join(format!("{name}.txt")))
 }
 /// Return Unix seconds for persisted authentication expiry timestamps.
@@ -426,47 +428,5 @@ fn failed(
     if count >= threshold {
         crate::security::event(conn, user, "authentication_locked", Some(scope), count)?;
     }
-    Ok(())
-}
-pub fn mailbox_path(root: &Path, phone: &str) -> PathBuf {
-    root.join(format!("{:x}.txt", Sha256::digest(phone.trim().as_bytes())))
-}
-fn now() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64
-}
-fn check_limit(conn: &Connection, scope: &str) -> AppResult<()> {
-    let until: Option<i64> = conn
-        .query_row(
-            "SELECT blocked_until FROM auth_attempts WHERE scope=?1",
-            [scope],
-            |r| r.get(0),
-        )
-        .optional()?;
-    if until.is_some_and(|t| t > now()) {
-        return Err("Too many failed attempts. Try again in 5 minutes.".into());
-    }
-    if until.is_some_and(|t| t > 0) {
-        reset_limit(conn, scope)?;
-    }
-    Ok(())
-}
-fn reset_limit(conn: &Connection, scope: &str) -> AppResult<()> {
-    conn.execute("DELETE FROM auth_attempts WHERE scope=?1", [scope])?;
-    Ok(())
-}
-fn failed(conn: &Connection, scope: &str, threshold: i64, event: &str) -> AppResult<()> {
-    conn.execute(
-        "INSERT INTO auth_attempts(scope,failures,blocked_until) VALUES (?1,1,0)
-        ON CONFLICT(scope) DO UPDATE SET failures=failures+1",
-        [scope],
-    )?;
-    conn.execute(
-        "UPDATE auth_attempts SET blocked_until=?2 WHERE scope=?1 AND failures>=?3",
-        params![scope, now() + 300, threshold],
-    )?;
-    audit(conn, None, None, None, event, 3)?;
     Ok(())
 }
