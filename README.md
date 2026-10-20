@@ -367,14 +367,6 @@ cargo run --locked -- --version
 cargo run --locked -- --signup
 ```
 
-The first command must show `secure_voting_machine 0.2.5`. Stop any older server/client
-processes before restarting. Do not remove your database or regenerate its pepper.
-If an error continues, record your OS, exact launch command and the full error text.
-The error now names the gateway/database endpoint and identifies whether failure
-occurred during connection, handshake/request sending, or response receipt. Do not
-include your password, PIN, OTP or `.env` contents in a bug report.
-
-
 ## Security receipts, not vibes
 
 Read [STRIDE.md](STRIDE.md) for threats, controls, evidence and limitations.
