@@ -124,25 +124,56 @@ impl State {
             services::require_role(&self.conn, &record.session, peer_role)?;
             match request.operation.as_str() {
                 "logout" => Ok(Value::Null),
+                // "error" => {
+                //     let (screen, message): (String, String) = serde_json::from_value(request.args)?;
+                //     let _ = screen;
+                //     let screen = "terminal-client";
+                //     // No form values, PINs, tokens or ballot selections are logged.
+                //     let _ = message; // Never store arbitrary client-supplied log text.
+                //     let message = "Client reported an operation failure";
+                //     self.conn.execute(
+                //         "INSERT INTO error_reports(actor_user_id,screen,message) VALUES (?1,?2,?3)",
+                //         rusqlite::params![record.session.user_id(), screen, message],
+                //     )?;
+                //     services::audit(
+                //         &self.conn,
+                //         None,
+                //         Some(record.session.user_id()),
+                //         None,
+                //         "client_error",
+                //         3,
+                //     )?;
+                //     Ok(Value::Null)
+                // }
                 "error" => {
-                    let (screen, message): (String, String) = serde_json::from_value(request.args)?;
-                    let _ = screen;
-                    let screen = "terminal-client";
-                    // No form values, PINs, tokens or ballot selections are logged.
-                    let _ = message; // Never store arbitrary client-supplied log text.
-                    let message = "Client reported an operation failure";
-                    self.conn.execute(
-                        "INSERT INTO error_reports(actor_user_id,screen,message) VALUES (?1,?2,?3)",
-                        rusqlite::params![record.session.user_id(), screen, message],
-                    )?;
-                    services::audit(
-                        &self.conn,
-                        None,
-                        Some(record.session.user_id()),
-                        None,
-                        "client_error",
-                        3,
-                    )?;
+                    let (_screen, _message): (String, String) =
+                        serde_json::from_value(request.args)?;
+
+                    if record.session.role() == Role::Voter {
+                        // Aggregate only. No identity, session or screen.
+                        crate::security::voter_metric(&self.conn, "client_error")?;
+                    } else {
+                        self.conn.execute(
+                            "INSERT INTO error_reports(
+                            actor_user_id,screen,message
+                        ) VALUES (?1,?2,?3)",
+                            rusqlite::params![
+                                record.session.user_id(),
+                                "terminal-client",
+                                "Client reported an operation failure"
+                            ],
+                        )?;
+
+                        services::audit(
+                            &self.conn,
+                            None,
+                            Some(record.session.user_id()),
+                            None,
+                            "client_error",
+                            3,
+                        )?;
+                    }
+
                     Ok(Value::Null)
                 }
                 _ => {

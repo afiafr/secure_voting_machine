@@ -46,11 +46,19 @@ pub fn register(
         "INSERT INTO election_voters(election_id,user_id) VALUES (?1,?2)",
         params![election, id],
     )?;
+    // audit(
+    //     &tx,
+    //     Some(election),
+    //     Some(session.user_id()),
+    //     Some(id),
+    //     "voter_registered",
+    //     0,
+    // )?;
     audit(
         &tx,
         Some(election),
         Some(session.user_id()),
-        Some(id),
+        None,
         "voter_registered",
         0,
     )?;
@@ -98,7 +106,8 @@ pub fn enroll(conn: &mut Connection, session: &Session, election: i64, nid: &str
         "INSERT INTO election_voters(election_id,user_id) VALUES (?1,?2)",
         params![election, id],
     )?;
-    finish_change(tx, session, election, Some(id), "voter_enrolled")
+    //finish_change(tx, session, election, Some(id), "voter_enrolled")
+    finish_change(tx, session, election, None, "voter_enrolled")
 }
 /// Removes eligibility, not historical identity or credentials.
 pub fn remove(
@@ -124,7 +133,8 @@ pub fn remove(
     {
         return Err("Voter not enrolled or already voted.".into());
     }
-    finish_change(tx, session, election, Some(voter), "voter_unenrolled")
+    //finish_change(tx, session, election, Some(voter), "voter_unenrolled")
+    finish_change(tx, session, election, None, "voter_unenrolled")
 }
 /// Update allowed voter profile fields; forbid ordinary OTP-phone/NID reassignment.
 pub fn update(
@@ -154,7 +164,8 @@ pub fn update(
         "UPDATE users SET email=NULLIF(?1,''),full_name=?2,dob=?3 WHERE id=?4 AND role='voter'",
         params![input.email, input.full_name, input.dob, voter],
     )?;
-    finish_change(tx, session, election, Some(voter), "voter_updated")
+    //finish_change(tx, session, election, Some(voter), "voter_updated")
+    finish_change(tx, session, election, None, "voter_updated")
 }
 /// Called only from the explicit engineer setup mode, never an ordinary role menu.
 pub fn provision(

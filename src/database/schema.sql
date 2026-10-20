@@ -179,6 +179,48 @@ CREATE TABLE IF NOT EXISTS system_settings (key TEXT PRIMARY KEY, value TEXT NOT
 INSERT OR IGNORE INTO system_settings VALUES ('system_email','systemadmin@gmail.com');
 CREATE TRIGGER IF NOT EXISTS security_no_update BEFORE UPDATE ON security_events BEGIN SELECT RAISE(ABORT,'Security events are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS security_no_delete BEFORE DELETE ON security_events BEGIN SELECT RAISE(ABORT,'Security events are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS audit_forbid_voter_identity
+BEFORE INSERT ON audit_events
+WHEN
+    NEW.event_type IN ('voter_participated', 'vote_rejected')
+    OR EXISTS (
+        SELECT 1
+        FROM users
+        WHERE role = 'voter'
+          AND id IN (
+              NEW.actor_user_id,
+              NEW.subject_user_id
+          )
+    )
+BEGIN
+    SELECT RAISE(
+        ABORT,
+        'Voter identity prohibited in audit log'
+    );
+END;
+CREATE TRIGGER IF NOT EXISTS security_forbid_voter_identity
+BEFORE INSERT ON security_events
+WHEN
+    NEW.scope LIKE 'pin:%'
+    OR EXISTS (
+        SELECT 1
+        FROM users
+        WHERE id = NEW.user_id
+          AND role = 'voter'
+    )
+BEGIN
+    SELECT RAISE(
+        ABORT,
+        'Voter identity prohibited in security log'
+    );
+END;
+CREATE TABLE IF NOT EXISTS voter_security_counts (
+    day TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    total INTEGER NOT NULL DEFAULT 0
+        CHECK(total >= 0),
+    PRIMARY KEY(day, event_type)
+);
 CREATE TRIGGER notify_audit_event AFTER INSERT ON audit_events
 BEGIN
  INSERT OR IGNORE INTO email_outbox(recipient,event_id)

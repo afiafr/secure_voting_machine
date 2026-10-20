@@ -201,8 +201,17 @@ impl Auth {
             None,
             i64::from(login.attempts) + 1,
         )?;
+        // if now() >= login.expires {
+        //     audit(conn, None, Some(login.user_id), None, "otp_expired", 3)?;
+        //     return Err("OTP expired; log in again.".into());
+        // }
         if now() >= login.expires {
-            audit(conn, None, Some(login.user_id), None, "otp_expired", 3)?;
+            if login.role == Role::Voter {
+                crate::security::voter_metric(conn, "otp_expired")?;
+            } else {
+                audit(conn, None, Some(login.user_id), None, "otp_expired", 3)?;
+            }
+
             return Err("OTP expired; log in again.".into());
         }
         let scope = format!("otp:{}", login.user_id);
@@ -226,8 +235,21 @@ impl Auth {
             }
             return Err("Invalid OTP; three failures require a cooldown and a new login.".into());
         }
+        // reset_limit(conn, &scope)?;
+        // audit(conn, None, Some(login.user_id), None, "login_succeeded", 0)?;
         reset_limit(conn, &scope)?;
-        audit(conn, None, Some(login.user_id), None, "login_succeeded", 0)?;
+
+        if login.role != Role::Voter {
+            audit(conn, None, Some(login.user_id), None, "login_succeeded", 0)?;
+
+            tracing::info!(
+                target: "security",
+                event_type = "staff_login_succeeded",
+                actor_user_id = login.user_id,
+                role = login.role.as_str(),
+                "Staff authenticated"
+            );
+        }
         Ok(Session {
             user_id: login.user_id,
             role: login.role,

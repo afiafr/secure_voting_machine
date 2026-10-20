@@ -1,0 +1,3 @@
+{"timestamp":"2026-10-20T02:22:02.901804Z","level":"INFO","fields":{"message":"Staff or system authentication activity","event_type":"password_attempt","actor_user_id":-1},"target":"security"}
+{"timestamp":"2026-10-20T02:22:02.903974Z","level":"WARN","fields":{"message":"Staff or system security event","event_type":"password_failed","actor_user_id":-1},"target":"security"}
+{"timestamp":"2026-10-20T02:22:02.905217Z","level":"WARN","fields":{"message":"Staff or system security event","event_type":"request_rejected","actor_user_id":-1},"target":"security"}

@@ -17,6 +17,7 @@ use ui::{run, App};
 /// Parse command modes, load configuration and start the TUI or TLS services.
 fn main() -> AppResult<()> {
     dotenvy::dotenv().ok();
+    let _trace_guard = init_security_tracing()?;
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|s| s == "--version") {
         println!(
@@ -100,4 +101,31 @@ fn main() -> AppResult<()> {
     ratatui::restore();
     result?;
     Ok(())
+}
+fn init_security_tracing() -> AppResult<tracing_appender::non_blocking::WorkerGuard> {
+    use tracing_subscriber::EnvFilter;
+
+    std::fs::create_dir_all("logs")?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions("logs", std::fs::Permissions::from_mode(0o700))?;
+    }
+
+    let appender = tracing_appender::rolling::daily("logs", "security.jsonl");
+
+    let (writer, guard) = tracing_appender::non_blocking(appender);
+
+    tracing_subscriber::fmt()
+        .json()
+        .with_ansi(false)
+        .with_current_span(false)
+        .with_span_list(false)
+        .with_writer(writer)
+        .with_env_filter(EnvFilter::new("security=info"))
+        .try_init()
+        .map_err(std::io::Error::other)?;
+
+    Ok(guard)
 }

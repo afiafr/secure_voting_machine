@@ -37,6 +37,13 @@ pub(super) fn start(
                     ("tls_or_protocol_rejected", 3)
                 };
                 let _ = services::audit(&state.conn, None, None, None, event, level);
+                tracing::warn!(
+                    target: "security",
+                    event_type = event,
+                    rejected_connections = count as u64,
+                    severity = level,
+                    "Network transport rejection aggregate"
+                );
                 let _ = state.auth.flush_notifications(&state.conn);
             }
         }

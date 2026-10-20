@@ -293,7 +293,19 @@ pub fn update_candidate(
     let party = text(party, "Political party")?;
     let tx = conn.transaction()?;
     owned(&tx, session, election, true)?;
-    if tx.execute("UPDATE candidates SET full_name=?1,political_party=?2 WHERE election_id=?3 AND candidate_id=?4",params![name,party,election,candidate])? !=1 { return Err("Candidate not found in election.".into()); }
+    // if tx.execute("UPDATE candidates SET full_name=?1,political_party=?2 WHERE election_id=?3 AND candidate_id=?4",params![name,party,election,candidate])? !=1 { return Err("Candidate not found in election.".into()); }
+    if tx.execute(
+        "UPDATE election_voters SET has_voted=1
+        WHERE election_id=?1 AND user_id=?2 AND has_voted=0",
+        params![election, session.user_id()],
+    )? != 1
+    {
+        tx.rollback()?;
+
+        crate::security::voter_metric(conn, "vote_rejected")?;
+
+        return Err("Already voted or not enrolled in this election.".into());
+    }
     finish_change(tx, session, election, None, "candidate_updated")
 }
 /// Remove a candidate assignment from a draft position.
@@ -392,13 +404,16 @@ pub fn cast(
             params![election, ballot, position, candidate],
         )?;
     }
-    finish_change(
-        tx,
-        session,
-        election,
-        Some(session.user_id()),
-        "voter_participated",
-    )
+    // finish_change(
+    //     tx,
+    //     session,
+    //     election,
+    //     Some(session.user_id()),
+    //     "voter_participated",
+    // )
+    crate::security::check_deadline()?;
+    tx.commit()?;
+    Ok(())
 }
 /// Require a closed election and district official; persist candidate/party totals.
 pub fn tally(conn: &mut Connection, session: &Session, election: i64) -> AppResult<()> {

@@ -38,6 +38,19 @@ pub fn check_deadline() -> AppResult<()> {
     }
 }
 /// Structured fields only: passwords, OTPs, request bodies and ballots never enter logs.
+// pub fn event(
+//     conn: &Connection,
+//     user: Option<i64>,
+//     kind: &str,
+//     scope: Option<&str>,
+//     attempts: i64,
+// ) -> AppResult<()> {
+//     conn.execute(
+//         "INSERT INTO security_events(user_id,event_type,scope,attempts) VALUES (?1,?2,?3,?4)",
+//         params![user, kind, scope, attempts],
+//     )?;
+//     crate::services::audit(conn, None, user, None, kind, 3)
+// }
 pub fn event(
     conn: &Connection,
     user: Option<i64>,
@@ -45,9 +58,91 @@ pub fn event(
     scope: Option<&str>,
     attempts: i64,
 ) -> AppResult<()> {
+    // Unknown PINs must also be treated as voter activity.
+    let pin_activity = scope.is_some_and(|s| s.starts_with("pin:"));
+
+    let voter_account = if let Some(id) = user {
+        conn.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM users
+                WHERE id=?1 AND role='voter'
+            )",
+            [id],
+            |r| r.get::<_, bool>(0),
+        )?
+    } else {
+        false
+    };
+
+    // Voter events must never enter an individual event log.
+    if pin_activity || voter_account {
+        return voter_metric(conn, kind);
+    }
+
+    // Staff/system events may retain attribution.
+    let severity = if matches!(
+        kind,
+        "password_attempt" | "password_verified" | "otp_attempt"
+    ) {
+        0
+    } else {
+        3
+    };
+
     conn.execute(
-        "INSERT INTO security_events(user_id,event_type,scope,attempts) VALUES (?1,?2,?3,?4)",
+        "INSERT INTO security_events(
+            user_id,event_type,scope,attempts
+         ) VALUES (?1,?2,?3,?4)",
         params![user, kind, scope, attempts],
     )?;
-    crate::services::audit(conn, None, user, None, kind, 3)
+
+    crate::services::audit(conn, None, user, None, kind, severity)?;
+
+    // Export only explicitly selected safe fields.
+    // Do not export the authentication scope.
+    if severity > 0 {
+        tracing::warn!(
+            target: "security",
+            event_type = kind,
+            actor_user_id = user.unwrap_or(-1),
+            "Staff or system security event"
+        );
+    } else {
+        tracing::info!(
+            target: "security",
+            event_type = kind,
+            actor_user_id = user.unwrap_or(-1),
+            "Staff or system authentication activity"
+        );
+    }
+
+    Ok(())
+}
+pub fn voter_metric(conn: &Connection, kind: &str) -> AppResult<()> {
+    // Only explicit, non-identifying categories are permitted.
+    let allowed = matches!(
+        kind,
+        "pin_failed"
+            | "otp_failed"
+            | "otp_expired"
+            | "authentication_locked"
+            | "authentication_blocked"
+            | "vote_rejected"
+            | "client_error"
+            | "authorization_denied"
+    );
+
+    if !allowed {
+        return Ok(());
+    }
+
+    conn.execute(
+        "INSERT INTO voter_security_counts(day,event_type,total)
+         VALUES (strftime('%Y-%m-%d','now'), ?1, 1)
+         ON CONFLICT(day,event_type)
+         DO UPDATE SET total=total+1",
+        [kind],
+    )?;
+
+    Ok(())
 }
