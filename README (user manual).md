@@ -12,7 +12,7 @@ Create elections, register voters, cast immutable ballots, and announce results.
 Administrator and District Official accounts use password + OTP login; voters use
 PIN + OTP login. All client operations pass through encrypted role endpoints.
 
-> **Classroom project:** OTP delivery uses a local virtual inbox. Network services
+> OTP delivery uses a local virtual inbox. Network services
 > bind to localhost. See [Security scope](docs/SECURITY.md) for the trust boundaries.
 
 [Installation](#installation) · [Staff signup](#sign-up-administrators-and-district-officials) ·
@@ -418,18 +418,6 @@ Five wrong passwords lock that identity for five minutes. Three wrong OTPs inval
 the challenge and lock that identity for five minutes. Ten wrong guesses against the
 same PIN value block that PIN lookup for five minutes, not all voters. These controls
 limit guessing but cannot prevent targeted lockout or every denial-of-service attack.
-
-### Code documentation
-
-Read `implementation_details.md` for the function inventory and `dummy.md` for
-the beginner walkthrough. Rust source comments stay beside their functions.
-Generated HTML documentation is excluded from the project.
-
-To refresh the Markdown inventory after editing code:
-
-```sh
-python3 scripts/generate_docs.py
-```
 
 ### Before the demo
 
