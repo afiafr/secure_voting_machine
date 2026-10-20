@@ -207,7 +207,7 @@ Notification delivery is retried during later activity. A crash after file outpu
 | Read-only statewide demo database | `demo/statewide_voters.sqlite` stores ID, name, DOB and phone. `VOTING_REGISTRY_DB` can select another database; missing/unreadable production registry prevents startup rather than accepting identities unchecked. |
 | Canonical identity/phone matching | Redirecting the phone or changing the supplied identity fields fails verification. The application does not return the full registry. |
 | Age eligibility | Real date validation; both entered and stored DOB must meet age 18. New York calendar date is used. Under the demo rule, February 29 birthdays reach the threshold on March 1 in non-leap years. This is an implementation rule, not a legal eligibility determination. |
-| Valid-record guide | `demo/voter_ids.txt`, README and dummy guide include matching DOB/phone records and a deliberately underage record. All identities are fictional. |
+| Valid-record guide | `demo/voter_ids.txt`, README includes matching DOB/phone records and a deliberately underage record. All identities are fictional. |
 | PIN receipt question | Admin answers yes/no after private delivery; both outcomes have tested audit behavior without revealing the PIN or voter identity. |
 | Final result protection | First tally only, no deleting/recalculating prior totals, immutable result rows and final timestamps, duplicate-announcement rejection. |
 | Cancelled-election audit access | Cancellation hides a draft from ordinary selection but keeps it selectable in the owning admin’s audit view. |

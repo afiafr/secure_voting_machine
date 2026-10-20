@@ -377,8 +377,7 @@ include your password, PIN, OTP or `.env` contents in a bug report.
 
 ## Security receipts, not vibes
 
-Read [STRIDE.md](STRIDE.md) for threats, controls, evidence and limitations. Start
-with [dummy.md](dummy.md) if the project currently looks like alphabet soup.
+Read [STRIDE.md](STRIDE.md) for threats, controls, evidence and limitations.
 [implementation_details.md](implementation_details.md) lists every Rust function,
 its signature, purpose and module, plus the important data and security contracts.
 
