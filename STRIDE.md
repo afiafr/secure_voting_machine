@@ -1,6 +1,6 @@
 # STRIDE: receipts for the threat model 🔐
 
-Version 0.2.2. This is the implementation's security contract, not a claim that a
+Version 0.2.5. This is the implementation's security contract, not a claim that a
 classroom program is a production election system. All six STRIDE categories apply.
 Read this together with `docs/TESTING.md` and the generated function reference.
 
@@ -59,7 +59,7 @@ inboxes or replace code/SQLite; POSIX permissions cannot protect against that ow
 | Election configuration | Own drafts: create/edit | Read; lifecycle operations | Read own open enrolled election |
 | Voter identity / participation | Own elections | Denied | Used internally for own authorization |
 | Ballot choices | Denied | Backend tally reads; returns anonymous aggregates | Submit own complete ballot once, no general read |
-| Audit lifecycle / voter participation | Own election, own account security events | Denied audit listing | Denied |
+| Audit lifecycle / voter registration | Own election, own account security events | Denied audit listing | Denied |
 | Credentials / PIN hashes / OTP hashes | No endpoint | No endpoint | No endpoint |
 
 Admin and DO identities are not linked through ballot IDs. Ballots contain no user ID,
@@ -107,7 +107,9 @@ independently tamper-proof against the backend OS account.
 - bcrypt/rustls/random OTP and local inboxes replace speculative crate/provider names.
   A PIN is a secret credential, never `SHA3(user_id)` or a public ballot identifier.
 - No national-ID provider was supplied. NID uniqueness is enforced locally; identity
-  authenticity and NID-to-phone ownership are not verified against a national database.
+  authenticity and phone ownership are not verified against a real national database.
+  A separate read-only SQLite/mTLS demo registry now checks ID + name + DOB + phone; age
+  must be 18+. Test records live in demo/voter_ids.txt.
 - OTP is software-only as requested. Do not call same-account text inboxes strong MFA.
 - TLS wraps actual network hops, not ordinary Rust function calls. HTTP status 500 does
   not apply to this custom length-prefixed JSON protocol; errors use `Response.error`.
@@ -124,7 +126,7 @@ Level 1: confirmed service outage; an external monitor would be required to reli
 report a dead process. A normal timeout is not automatically proof of an attacker or
 of total service outage. System and identity lockouts must not disable all voters.
 
-## v0.2.2 simplification check
+## v0.2.5 simplification check
 
 The role-specific gateway certificates, authenticated sessions, ownership checks,
 OTP/retry limits, ten-second deadlines, fixed audit events, privacy filters and
@@ -138,3 +140,40 @@ Virtual SMS inbox filenames now use validated phone numbers (7–15 ASCII digits
 optional leading +). Only the fixed `engineer` alias is also accepted; path
 separators and traversal strings are rejected. Inbox directory/file permissions
 remain restricted. Phone numbers are now visible in filenames to the OS account.
+
+## Eligibility, receipts and audit privacy
+
+The registry simulator uses its own CA and exact backend client-certificate check.
+Untrusted TLS peers cannot query it. Unknown ID, changed DOB/name or an unavailable
+endpoint reject enrollment/submission. Registry rows are read-only after startup.
+This prevents arbitrary identities within the demo dataset; it does not establish
+real-world identity, phone ownership, citizenship or government registration.
+
+Shared DOB validation plus a transaction-side age check reject under-18 voters.
+Choices stay local until Submit. The atomic enrollment update blocks a second
+ballot even with simultaneous requests. The same transaction queues a plain thank-you
+text. No vote success/failure event is appended to the election audit. Authentication
+and generic security failures still have structured logs. Admins can see the internal
+participation flag through the voter list, and DOs cannot. A trusted database owner
+can observe timing/outbox data; this is not cryptographic unlinkability.
+
+Tests: `eighteenth_birthday_boundary_and_leap_day`,
+`registry_rejects_unknown_mismatched_and_underage_without_writes`,
+`registry_tls_fails_closed_and_requires_client_certificate`,
+`lifecycle_rejections_and_private_atomic_vote_receipt`, plus the terminal walkthrough.
+
+## Integration attack checks (v0.2.5)
+
+| STRIDE category | Local attack/check | Expected defense |
+| --- | --- | --- |
+| Spoofing | Forged/replayed sessions and OTP; wrong-role gateway; missing/untrusted TLS certificate; unknown registry ID | Reject credentials/session/transport; staff/system audit or anonymous voter counters |
+| Tampering | SQL-shaped ID; redirected phone; false adult DOB; repeat tally; direct result UPDATE/DELETE/REPLACE | Bound queries and canonical registry match; no partial registration; immutable results and timestamps |
+| Repudiation | Roll back when an audit insert fails; retry tally/announcement; both PIN receipt answers | Successful changes and audit commit together; warnings persist for finality rejection |
+| Information disclosure | Voter login/failure/error reports; inspect JSON traces, audit and notifications | No voter identity, PIN, OTP or ballot choices in individual audit/tracing; daily failure totals only |
+| Denial of service | Password/OTP/PIN limits, oversized/truncated frames, stalled requests | Bounded retries/framing/workers; ten-second deadline; transport aggregation |
+| Elevation of privilege | Call admin/DO endpoints directly as a voter; edit another admin's election | Backend role and ownership checks, independent of menus |
+
+These are automated, isolated tests using synthetic data, not a production penetration
+test or proof that all vulnerabilities are absent. A database/file owner can remove
+triggers, inspect local inboxes, or change the registry; OS administrators remain trusted.
+No general recount endpoint is provided. Existing historical logs are not scrubbed.

@@ -9,10 +9,7 @@ and registers voters, a District Official opens/closes elections and counts vote
 and a voter casts a ballot. The menus run **inside Terminal**. That's what TUI
 means. There's no website to open. We removed generated HTML to keep things smaller.
 
-**Before you start:** our fresh build hit a dependency-download issue involving
-`num-traits 0.2.29`. We tested this update using compiled dependencies already on
-hand, but haven't verified a fresh install. If you hit that error, you haven't
-messed up. Check the build note in section 2; don't delete your database or secret.
+**Before you start:** use the included repaired Cargo.lock. Build with `cargo build --locked`.
 
 ## Start here if you've never loaded the project
 
@@ -128,12 +125,7 @@ lives. Install Rust, a C toolchain and Python as described in the README.
 cargo build --locked
 ```
 
-**Known build issue in this verification environment:** the fresh registry could
-not resolve the existing lockfile's `num-traits 0.2.29`. The updated app was tested
-using retained compiled dependencies. If you hit that error, it is a dependency
-resolution problem, not an OTP or database problem. See `docs/TESTING.md`; a clean
-Cargo build has not been established for this release. Do not delete your database
-or pepper to try to fix it.
+The included lockfile has been repaired and built with Cargo on Linux.
 
 Next we need a private secret called a **pepper**, saved in `.env`. The app uses it
 when checking credentials. For a brand-new setup, copy this command once. If you
@@ -162,8 +154,6 @@ After building successfully:
    or District Official. Press Enter to submit.
 6. Signup creates the account; it does not log you in. Create the other staff role
    through the signup option, or launch `--signup` again and approve setup again.
-   
-   `cargo run -- --signup`.
 7. Exit with Ctrl+C. Start the normal app with the command below.
 
 Staff signup is an explicit local engineer capability. An ordinary voter cannot
@@ -185,7 +175,7 @@ After login, **wat do? (what to do)** has four options:
 | Create new election | Enter a name; persist a draft with President, Vice President and Secretary |
 | Edit existing election | List your elections and load saved positions/candidates from the DB |
 | Register a voter | Choose your election, then use R on its voter screen |
-| View audit log | Choose your election and read lifecycle/registration/participation events |
+| View audit log | Choose your election and read lifecycle/registration events |
 
 Each default position has two editable candidates, Hamberger Red and Blue Sandwich,
 with names and political parties. The defaults share candidate identities across
@@ -212,7 +202,7 @@ configuration is frozen. After changing data, the client reloads server state.
 
 On the voter screen:
 
-- **R:** register a new voter. Enter full name, DOB (`YYYY-MM-DD`), NID/passport ID,
+- **R:** register a new voter. Enter full name, DOB (`YYYY-MM-DD`), demo government voter ID,
   phone and optional email. The PIN goes into that voter's phone-named text file.
 - **I:** enroll an existing voter by NID; their PIN stays the same.
 - **E:** edit permitted profile fields for an unvoted draft enrollment. NID and
@@ -220,11 +210,35 @@ On the voter screen:
 - **D:** remove a draft enrollment. It does not erase credentials or voting history.
 - **Esc:** return to the menu. N is not a second registration action.
 
-Registration checks local NID/email duplicates and valid dates. It does not contact
-a government identity service. An invalid registration must not leave partial rows.
+Use all four fields from the same row in `demo/voter_ids.txt`. The separate
+`demo/statewide_voters.sqlite` database stores voter ID, name, DOB and phone.
+The server opens it read-only; `VOTING_REGISTRY_DB` selects a different database.
+A missing/unreadable database blocks startup; there is no permissive fallback.
+`demo/registry.sql` reproduces the fictional database. Editing the text cheat sheet
+alone does not change the database. No real government or mobile service is connected.
+
+| Voter ID | Full name | DOB | Phone |
+| --- | --- | --- | --- |
+| DEMO-NY-001 | Afia Demo | 2000-01-02 | +15551234567 |
+| DEMO-NY-002 | Sam Student | 1999-06-15 | +15551234568 |
+| SMOKE-NID | Terminal Voter | 2000-01-02 | +15550000003 |
+| DEMO-NY-MINOR | Young Demo | 2020-01-02 | +15551234569 (must be rejected) |
+
+An unknown ID shows: “This user does not have a state-wide identifier to take part
+in this election.” A phone/name/DOB mismatch is rejected. Both the entered DOB and
+the stored DOB must be adult; forging an adult DOB for the minor record fails.
+Underage attempts create `voter_not_eligible_underage` (severity 2), attributed to
+the administrator without the applicant's identity. Other categories are
+`voter_identifier_not_found`, `voter_registry_mismatch`, and `voter_registry_unavailable`.
+
+After registration, **Did voter receive PIN?** accepts `yes` or `no`. The PIN appears
+only in `virtual_sms/<registered-phone>.txt`, never on the admin screen. The answer
+is audited without the voter ID; `no` is a warning and keeps the registration saved.
+This records the administrator's report, not independent proof of delivery.
 
 Audit: Up/Down scroll, R refreshes, F flags a concern, Esc returns. The admin sees
-who participated, event times and actors, but **no PIN, ballot contents or choices**.
+lifecycle/registration times and actors, but **no vote events, PINs or choices**.
+Who already voted? Look in the admin voter list; that uses `election_voters`.
 
 ## 4. District Official: run the election
 
@@ -248,12 +262,13 @@ The DO sees anonymous results, not voter names or who voted.
 1. Get the Voting PIN from your phone-named file after registration.
 2. Choose Voter, enter that PIN, then read and enter the new Login OTP.
 3. Select an eligible **open** election. Draft/closed elections are unavailable;
-   an election you already voted in is also unavailable.
+   selecting an open election you already voted in says `you already voted bruh`.
 4. Use Up/Down to reach a candidate and Space to select them. Select one candidate
    for every position. You may change these local selections before submission.
 5. Press S, review the confirmation, then Enter/Y to submit the complete ballot.
-6. After acceptance, you cannot edit the vote or submit another ballot for that
-   election. Esc before submitting returns without casting.
+6. Submit signs you out. Your phone-named file gets `thank you for your vote!`.
+   You cannot edit the vote or submit another ballot for that election. Esc before
+   submitting returns without casting.
 
 The backend verifies every position/candidate pair. It writes the ballot choices
 and participation flag in one transaction. Failure rolls everything back; two
@@ -384,7 +399,7 @@ Do not regenerate certificates while an existing server/client pair is running.
 
 Five wrong passwords cause a five-minute cooldown. Three wrong OTPs invalidate the
 challenge and cause a five-minute cooldown. Ten wrong guesses at the same PIN value
-block that lookup for five minutes. Retry events are logged without the secrets.
+block that lookup for five minutes. Staff retry events are logged without secrets; voter failures become anonymous daily counters.
 Requests have a ten-second budget; timeout closes that connection, not the whole app.
 
 ## 10. Before we demo: does it actually work?
@@ -400,9 +415,7 @@ python3 tests/terminal_smoke.py
 ```
 
 The terminal script uses synthetic accounts and a temporary database; it cleans up
-afterward. The latest verification had 44 passing Rust tests and a passing real-TUI
-journey using retained compiled dependencies. Fresh Cargo resolution was blocked as
-noted above; see [docs/TESTING.md](docs/TESTING.md) for the exact qualification.
+afterward. See [docs/TESTING.md](docs/TESTING.md) for the latest Cargo and terminal results.
 
 Use [STRIDE.md](STRIDE.md) for threats/defenses and [docs/DEMO.md](docs/DEMO.md) for
 oral-exam preparation. Be ready to explain validation at both client and server,
@@ -418,3 +431,5 @@ and the error text. Please don't paste your password, PIN, OTP or `.env` into th
 group chat.
 
 all best (all the best) — see you at the demo 🫡
+
+For the full button-by-button rehearsal, open [Possible User Journeys](POSSIBLE_USER_JOURNEYS.md).

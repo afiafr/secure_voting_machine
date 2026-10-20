@@ -1,7 +1,14 @@
 /target/
+.env
 *.db
 *.db-shm
 *.db-wal
 /virtual_sms/
 /tls-dev/
 /docs/api/
+
+/logs/
+*~
+\#*\#
+.\#*
+__pycache__/
